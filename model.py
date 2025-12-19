@@ -8,6 +8,28 @@ Pos = Tuple[int, int]
 
 
 @dataclass
+class Bomb:
+    pos: Pos
+    range: int
+    timer: float
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "Bomb":
+        return Bomb(
+            pos=(int(d["pos"][0]), int(d["pos"][1])),
+            range=int(d.get("range", 1)),
+            timer=float(d.get("timer", 0.0)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "pos": [self.pos[0], self.pos[1]],
+            "range": self.range,
+            "timer": self.timer,
+        }
+
+
+@dataclass
 class Bomber:
     id: str
     alive: bool
@@ -45,6 +67,28 @@ class Bomber:
 
 
 @dataclass
+class EnemyBomber:
+    id: str
+    pos: Pos
+    safe_time: int
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "EnemyBomber":
+        return EnemyBomber(
+            id=d["id"],
+            pos=(int(d["pos"][0]), int(d["pos"][1])),
+            safe_time=int(d.get("safe_time", 0)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "pos": [self.pos[0], self.pos[1]],
+            "safe_time": self.safe_time,
+        }
+
+
+@dataclass
 class Mob:
     id: str
     type: str
@@ -73,21 +117,21 @@ class Mob:
 class Arena:
     obstacles: List[Pos]
     walls: List[Pos]
-    bombs: List[Any]  # пока пусто; тип уточнишь когда появится структура
+    bombs: List[Bomb]
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Arena":
         return Arena(
             obstacles=[(int(x), int(y)) for x, y in d.get("obstacles", [])],
             walls=[(int(x), int(y)) for x, y in d.get("walls", [])],
-            bombs=d.get("bombs", []),
+            bombs=[Bomb.from_dict(b) for b in d.get("bombs", [])],
         )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "obstacles": [[x, y] for x, y in self.obstacles],
             "walls": [[x, y] for x, y in self.walls],
-            "bombs": self.bombs,
+            "bombs": [b.to_dict() for b in self.bombs],
         }
 
 
@@ -98,7 +142,7 @@ class GameState:
     map_size: Tuple[int, int]
     bombers: List[Bomber]
     arena: Arena
-    enemies: List[Any]
+    enemies: List[EnemyBomber]
     mobs: List[Mob]
     code: int
     errors: List[Any]
@@ -112,7 +156,7 @@ class GameState:
             map_size=(int(d["map_size"][0]), int(d["map_size"][1])),
             bombers=[Bomber.from_dict(x) for x in d.get("bombers", [])],
             arena=Arena.from_dict(d["arena"]),
-            enemies=d.get("enemies", []),
+            enemies=[EnemyBomber.from_dict(x) for x in d.get("enemies", [])],
             mobs=[Mob.from_dict(x) for x in d.get("mobs", [])],
             code=int(d.get("code", 0)),
             errors=d.get("errors", []),
@@ -126,9 +170,23 @@ class GameState:
             "map_size": [self.map_size[0], self.map_size[1]],
             "bombers": [b.to_dict() for b in self.bombers],
             "arena": self.arena.to_dict(),
-            "enemies": self.enemies,
+            "enemies": [e.to_dict() for e in self.enemies],
             "mobs": [m.to_dict() for m in self.mobs],
             "code": self.code,
             "errors": self.errors,
             "raw_score": self.raw_score,
+        }
+
+
+@dataclass
+class MoveCommand:
+    bomber_id: str
+    path: List[Pos]
+    bombs: List[Pos]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.bomber_id,
+            "path": [[x, y] for x, y in self.path],
+            "bombs": [[x, y] for x, y in self.bombs],
         }
