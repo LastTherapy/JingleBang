@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+import json
+import time
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -21,6 +24,12 @@ class Arena2DViewer:
       - динамический слой: players (список игроков, отрисовываются поверх)
     """
 
+    class BlockType(Enum):
+        EMTPY = 0
+        WALL = 1
+        OBSTACLE = 2
+        PLAYER = 3
+
     def __init__(
         self,
         cell_size: float = 1.0,
@@ -28,6 +37,7 @@ class Arena2DViewer:
         show_edges: bool = True,
         window_title: str = "Arena",
     ):
+        pv.global_theme.allow_empty_mesh = True
         self.cell_size = float(cell_size)
         self.player_z = float(player_z)
         self.show_edges = bool(show_edges)
@@ -66,7 +76,24 @@ class Arena2DViewer:
 
         self._shown = True
 
-    def update_state(self, grid: Sequence[Sequence[int]], players: Iterable[Player]) -> None:
+    def update_state_json(self, grid):
+        obstacles = grid["arena"]["obstacles"]
+        walls = grid["arena"]["walls"]
+        # arenaWidth = max(map(lambda a: a[0], obstacles)) + 1
+        # arenaHeight = max(map(lambda a: a[1], obstacles)) + 1        
+        arenaWidth = grid["map_size"][0]
+        arenaHeight = grid["map_size"][1]
+
+        curMap = [[0 for _ in range(arenaHeight)] for _ in range(arenaWidth)]
+        for cur in obstacles:
+            print(cur[0], cur[1])
+            curMap[cur[0]][cur[1]] = 2
+        for cur in walls:
+            curMap[cur[0]][cur[1]] = 1
+
+        self.update_state(curMap)
+
+    def update_state(self, grid: Sequence[Sequence[int]]) -> None:
         """
         Изменить состояние арены: размер/содержимое/игроки.
 
@@ -86,7 +113,7 @@ class Arena2DViewer:
         self._grid_mesh.cell_data["cell_type"] = cell_scalars
 
         # Обновляем игроков
-        self._update_players(players=players, rows=rows, cols=cols)
+        # self._update_players(players=players, rows=rows, cols=cols)
 
         # Если окно уже показано — отрисовываем изменения
         if self._plotter is not None and self._shown:
@@ -191,10 +218,14 @@ if __name__ == "__main__":
         [1, 0, 0, 0, 0, 1],
         [1, 1, 1, 1, 1, 1],
     ]
-    players = [Player(1, 1), Player(4, 3)]
+    # players = [Player(1, 1), Player(4, 3)]
 
-    viewer.update_state(grid=grid, players=players)
+    with open("/Users/ohaggard/trash/JingleBang/visualizer/test.json", "r") as f:
+        loadedJson = json.loads(f.read())
+    viewer.update_state_json(grid=loadedJson)
+    # viewer.update_state(grid=grid)
     viewer.show_window()
 
-    # Дальше можете в цикле вызывать viewer.update_state(...)
-    # viewer.close_window() по завершению
+    while True:
+        viewer._plotter.update()
+        time.sleep(0.016)  # ~60 FPS
