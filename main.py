@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 import time
+from model import GameState, Bomber, Mob
 
 TOKEN = "345c75ba-26c0-4f3e-acd4-09e63982ca52"
 BASE_URL = "https://games-test.datsteam.dev/api/"
@@ -52,9 +53,10 @@ def save_response_json(
 out_dir.mkdir(parents=True, exist_ok=True)
 
 
-response = requests.get(ROUNDS, headers=HEADERS)
-print(response.text)
-
+response = requests.get(ARENA, headers=HEADERS)
+game_state = GameState.from_dict(response.json())
+for bomber in game_state.bombers:
+    print(bomber)
 # while True:
 #     response = requests.get(ARENA, headers=HEADERS)
 #     path = save_response_json(response, prefix="arena", out_dir="round5")
