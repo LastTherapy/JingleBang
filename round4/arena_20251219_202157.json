@@ -1,0 +1,241 @@
+{
+  "player": "Чайная терапия",
+  "round": "datsjinglebang-test-5",
+  "map_size": [
+    167,
+    167
+  ],
+  "bombers": [
+    {
+      "id": "af813d10-7949-4f5e-8c30-72f0b4472e96",
+      "alive": true,
+      "pos": [
+        131,
+        125
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_100",
+      "safe_time": 0
+    },
+    {
+      "id": "814baf10-5ee1-4943-bc96-a74c5f2cae88",
+      "alive": true,
+      "pos": [
+        131,
+        125
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_100",
+      "safe_time": 0
+    },
+    {
+      "id": "d61090ae-d8a5-439f-ab9c-042ef9bf51de",
+      "alive": true,
+      "pos": [
+        131,
+        125
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_100",
+      "safe_time": 0
+    },
+    {
+      "id": "d218a81d-30b5-4621-b004-7828f4beea84",
+      "alive": true,
+      "pos": [
+        131,
+        125
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_100",
+      "safe_time": 0
+    },
+    {
+      "id": "c22ddf77-beb1-4945-8cb2-7710eca57471",
+      "alive": true,
+      "pos": [
+        131,
+        125
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_100",
+      "safe_time": 0
+    },
+    {
+      "id": "1a67356d-9b09-4aa4-b06e-4490026e2ef9",
+      "alive": true,
+      "pos": [
+        131,
+        125
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_100",
+      "safe_time": 0
+    }
+  ],
+  "arena": {
+    "obstacles": [
+      [
+        126,
+        125
+      ],
+      [
+        135,
+        127
+      ],
+      [
+        128,
+        123
+      ],
+      [
+        129,
+        121
+      ],
+      [
+        129,
+        123
+      ],
+      [
+        128,
+        121
+      ],
+      [
+        127,
+        122
+      ],
+      [
+        129,
+        122
+      ],
+      [
+        127,
+        125
+      ],
+      [
+        135,
+        122
+      ]
+    ],
+    "walls": [
+      [
+        134,
+        122
+      ],
+      [
+        132,
+        124
+      ],
+      [
+        130,
+        126
+      ],
+      [
+        128,
+        122
+      ],
+      [
+        134,
+        128
+      ],
+      [
+        130,
+        128
+      ],
+      [
+        132,
+        122
+      ],
+      [
+        134,
+        124
+      ],
+      [
+        132,
+        126
+      ],
+      [
+        128,
+        128
+      ],
+      [
+        134,
+        126
+      ],
+      [
+        132,
+        128
+      ],
+      [
+        128,
+        126
+      ],
+      [
+        130,
+        122
+      ],
+      [
+        128,
+        124
+      ],
+      [
+        130,
+        124
+      ]
+    ],
+    "bombs": []
+  },
+  "enemies": [
+    {
+      "id": "d8feb117-75fa-a290-d033-4576f07b16e5",
+      "pos": [
+        134,
+        121
+      ],
+      "tier": "top_20",
+      "safe_time": 0
+    },
+    {
+      "id": "e805c1de-b69f-8418-cb64-89f738134280",
+      "pos": [
+        133,
+        124
+      ],
+      "tier": "top_20",
+      "safe_time": 0
+    },
+    {
+      "id": "0f52bc45-ae1f-0262-2937-23351429cc27",
+      "pos": [
+        134,
+        127
+      ],
+      "tier": "top_20",
+      "safe_time": 0
+    },
+    {
+      "id": "13be1e94-99c3-f9d7-6240-9f1eb4099492",
+      "pos": [
+        134,
+        127
+      ],
+      "tier": "top_20",
+      "safe_time": 0
+    }
+  ],
+  "mobs": [],
+  "code": 0,
+  "errors": [],
+  "raw_score": 0
+}

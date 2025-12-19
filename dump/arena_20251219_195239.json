@@ -1,0 +1,288 @@
+{
+  "player": "Чайная терапия",
+  "round": "datsjinglebang-test-3",
+  "map_size": [
+    167,
+    167
+  ],
+  "bombers": [
+    {
+      "id": "08892a0b-5a3d-48a4-9c6a-d4531a8d7101",
+      "alive": true,
+      "pos": [
+        53,
+        37
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_80",
+      "safe_time": 0
+    },
+    {
+      "id": "f7521103-e3d5-4f7f-81e1-947ea4b4bfbe",
+      "alive": true,
+      "pos": [
+        53,
+        37
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_80",
+      "safe_time": 0
+    },
+    {
+      "id": "eac82500-6fde-47d1-8351-2955d9bfc12c",
+      "alive": true,
+      "pos": [
+        53,
+        37
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_80",
+      "safe_time": 0
+    },
+    {
+      "id": "424527c7-ae8a-475a-a2c3-aab896f3f3c0",
+      "alive": true,
+      "pos": [
+        53,
+        37
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_80",
+      "safe_time": 0
+    },
+    {
+      "id": "140ac76a-d6bf-49bc-a257-3997182e0762",
+      "alive": true,
+      "pos": [
+        53,
+        37
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_80",
+      "safe_time": 0
+    },
+    {
+      "id": "d1f6b119-73de-46a8-b228-8424e84bfe3b",
+      "alive": true,
+      "pos": [
+        53,
+        37
+      ],
+      "armor": 0,
+      "bombs_available": 1,
+      "can_move": true,
+      "tier": "top_80",
+      "safe_time": 0
+    }
+  ],
+  "arena": {
+    "obstacles": [
+      [
+        49,
+        36
+      ],
+      [
+        52,
+        33
+      ],
+      [
+        53,
+        33
+      ],
+      [
+        51,
+        39
+      ],
+      [
+        51,
+        41
+      ],
+      [
+        55,
+        36
+      ],
+      [
+        49,
+        40
+      ],
+      [
+        53,
+        42
+      ],
+      [
+        50,
+        33
+      ],
+      [
+        57,
+        38
+      ],
+      [
+        50,
+        39
+      ],
+      [
+        52,
+        41
+      ],
+      [
+        53,
+        32
+      ],
+      [
+        55,
+        35
+      ],
+      [
+        48,
+        37
+      ],
+      [
+        49,
+        38
+      ],
+      [
+        51,
+        35
+      ],
+      [
+        52,
+        35
+      ],
+      [
+        58,
+        37
+      ],
+      [
+        51,
+        40
+      ],
+      [
+        51,
+        33
+      ],
+      [
+        52,
+        39
+      ]
+    ],
+    "walls": [
+      [
+        54,
+        40
+      ],
+      [
+        52,
+        38
+      ],
+      [
+        56,
+        38
+      ],
+      [
+        56,
+        40
+      ],
+      [
+        50,
+        40
+      ],
+      [
+        56,
+        36
+      ],
+      [
+        50,
+        38
+      ],
+      [
+        50,
+        34
+      ],
+      [
+        54,
+        34
+      ],
+      [
+        56,
+        34
+      ],
+      [
+        54,
+        38
+      ],
+      [
+        52,
+        40
+      ],
+      [
+        52,
+        34
+      ],
+      [
+        50,
+        36
+      ],
+      [
+        52,
+        36
+      ],
+      [
+        54,
+        36
+      ]
+    ],
+    "bombs": [
+      {
+        "pos": [
+          53,
+          38
+        ],
+        "timer": 5.450150814,
+        "range": 1
+      },
+      {
+        "pos": [
+          49,
+          37
+        ],
+        "timer": 3.895913928,
+        "range": 1
+      }
+    ]
+  },
+  "enemies": [
+    {
+      "id": "0e38691e-7889-fc6a-71b0-488e116c1853",
+      "pos": [
+        55,
+        37
+      ],
+      "tier": "top_20",
+      "safe_time": 0
+    },
+    {
+      "id": "2073b5f7-c41f-95cc-3622-161a2ff8e14e",
+      "pos": [
+        55,
+        40
+      ],
+      "tier": "top_20",
+      "safe_time": 0
+    }
+  ],
+  "mobs": [],
+  "code": 0,
+  "errors": [],
+  "raw_score": 0
+}

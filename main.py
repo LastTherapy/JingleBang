@@ -55,8 +55,8 @@ out_dir.mkdir(parents=True, exist_ok=True)
 response = requests.get(ROUNDS, headers=HEADERS)
 print(response.text)
 
-while True:
-    response = requests.get(ARENA, headers=HEADERS)
-    path = save_response_json(response, prefix="arena", out_dir="dump")
-    print("Saved to:", path)
-    time.sleep(1.0)
+# while True:
+#     response = requests.get(ARENA, headers=HEADERS)
+#     path = save_response_json(response, prefix="arena", out_dir="round5")
+#     print("Saved to:", path)
+#     time.sleep(1.0)
