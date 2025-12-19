@@ -2,6 +2,7 @@ import requests
 from pathlib import Path
 import json
 from datetime import datetime
+from visualizer.viewer import ArenaVizProcess
 import time
 from model import GameState, Bomber, Mob
 
@@ -53,12 +54,17 @@ def save_response_json(
 out_dir.mkdir(parents=True, exist_ok=True)
 
 
-response = requests.get(ARENA, headers=HEADERS)
-game_state = GameState.from_dict(response.json())
-for bomber in game_state.bombers:
-    print(bomber)
-# while True:
-#     response = requests.get(ARENA, headers=HEADERS)
-#     path = save_response_json(response, prefix="arena", out_dir="round5")
-#     print("Saved to:", path)
-#     time.sleep(1.0)
+response = requests.get(ROUNDS, headers=HEADERS)
+print(response.text)
+
+
+if __name__ == "__main__":
+    viewer = ArenaVizProcess()
+    viewer.start()
+
+    while True:
+        response = requests.get(ARENA, headers=HEADERS)
+        viewer.set_state(json.loads(response.text))
+        path = save_response_json(response, prefix="arena", out_dir="dump")
+        print("Saved to:", path)
+        time.sleep(1.0)
