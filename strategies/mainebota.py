@@ -17,6 +17,7 @@ HEADERS = {
 ARENA_URL = f"{BASE_URL}/api/arena"
 MOVE_URL = f"{BASE_URL}/api/move"
 
+
 Pos = Tuple[int, int]
 
 
