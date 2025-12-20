@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Callable, Optional
+from typing import Optional
 
 from model import Pos
 
@@ -22,11 +22,8 @@ def bfs_path(
     w: int,
     h: int,
     blocked: set[Pos],
-    max_len: int,
+    max_len: int = 30,
 ) -> Optional[list[Pos]]:
-    """
-    Возвращает список шагов (без стартовой клетки), длиной <= max_len.
-    """
     if start == goal:
         return []
 
@@ -37,56 +34,64 @@ def bfs_path(
     while q:
         cur = q.popleft()
         for nb in neighbors4(cur):
-            if not inside(nb, w, h) or nb in seen or nb in blocked:
+            if not inside(nb, w, h):
                 continue
+            if nb in seen:
+                continue
+            if nb in blocked:
+                continue
+
             seen.add(nb)
             prev[nb] = cur
+
             if nb == goal:
                 path_rev = [goal]
                 while path_rev[-1] != start:
                     path_rev.append(prev[path_rev[-1]])
                 path = list(reversed(path_rev))
-                steps = path[1:]
+                steps = path[1:]  # без стартовой клетки
                 return steps[:max_len]
+
             q.append(nb)
+
     return None
 
 
-def bfs_find(
+def bfs_nearest(
     start: Pos,
+    goals: set[Pos],
     w: int,
     h: int,
     blocked: set[Pos],
-    *,
-    predicate: Callable[[Pos], bool],
-    max_expand: int = 5000,
+    max_len: int = 30,
 ) -> Optional[list[Pos]]:
-    """
-    Находит ближайшую клетку, удовлетворяющую predicate, и возвращает путь шагов (без start).
-    """
-    if predicate(start):
-        return []
+    """Путь к ближайшей из целей."""
+    if not goals:
+        return None
 
     q = deque([start])
     prev: dict[Pos, Pos] = {}
     seen = {start}
-    expanded = 0
 
-    while q and expanded < max_expand:
+    while q:
         cur = q.popleft()
-        expanded += 1
+        if cur in goals and cur != start:
+            # восстановим путь до cur
+            path_rev = [cur]
+            while path_rev[-1] != start:
+                path_rev.append(prev[path_rev[-1]])
+            path = list(reversed(path_rev))
+            return path[1:][:max_len]
+
         for nb in neighbors4(cur):
-            if not inside(nb, w, h) or nb in seen or nb in blocked:
+            if not inside(nb, w, h):
+                continue
+            if nb in seen:
+                continue
+            if nb in blocked:
                 continue
             seen.add(nb)
             prev[nb] = cur
-            if predicate(nb):
-                # reconstruct
-                path_rev = [nb]
-                while path_rev[-1] != start:
-                    path_rev.append(prev[path_rev[-1]])
-                path = list(reversed(path_rev))
-                return path[1:]
             q.append(nb)
 
     return None
