@@ -6,14 +6,12 @@ from typing import Optional
 from model import Pos, Bomber
 from strategies.base import Strategy, DecisionContext, UnitPlan
 from services.nav import bfs_path, neighbors4
-from services.danger import blast_cross
+from services.danger import danger_from_bomb
 
 
 @dataclass
 class FarmObstaclesStrategy:
-    """
-    Подойти к ближайшему разрушаемому препятствию, поставить бомбу, убежать.
-    """
+    """Подходим к ближайшему разрушаемому препятствию, ставим бомбу, отбегаем."""
     id: str = "farm_obstacles"
 
     def decide_for_unit(self, unit: Bomber, ctx: DecisionContext) -> Optional[UnitPlan]:
@@ -22,9 +20,9 @@ class FarmObstaclesStrategy:
         if not ctx.obstacles:
             return None
 
-        blocked = _blocked_cells(ctx)
+        blocked = ctx.walls | ctx.obstacles | set(ctx.bombs.keys())
 
-        # 1) клетка постановки рядом с препятствием
+        # 1) выбираем ближайшую клетку постановки рядом с препятствием
         best: tuple[int, Pos, Pos] | None = None  # (dist, place_cell, obstacle_cell)
         for obs in ctx.obstacles:
             for place in neighbors4(obs):
@@ -44,19 +42,25 @@ class FarmObstaclesStrategy:
 
         _, place, obs = best
         to_place = bfs_path(unit.pos, place, ctx.width, ctx.height, blocked, max_len=30)
-        if not to_place:
+        if to_place is None or not to_place:
             return None
 
-        bomb_range = max(1, int(ctx.booster.bomb_range))
+        # 2) моделируем взрыв будущей бомбы (range=1, пока нет данных о прокачке)
+        future_blast = danger_from_bomb(
+            place,
+            bomb_range=1,
+            walls=ctx.walls,
+            obstacles=ctx.obstacles,
+            bombs_as_stoppers=set(ctx.bombs.keys()) | {place},
+            map_size=(ctx.width, ctx.height),
+        )
+        forbidden = ctx.danger | future_blast | blocked | {place}
 
-        # 2) зона будущего взрыва
-        future_blast = blast_cross(place, bomb_range, ctx.walls, ctx.obstacles, set(ctx.bombs.keys()) | {place})
-        forbidden = set(blocked) | set(ctx.danger) | future_blast | ctx.mob_positions
-
-        # 3) найти безопасную клетку для отхода
         escape = self._pick_escape(place, ctx, forbidden)
         if escape is None:
-            return None
+            escape = self._any_free_neighbor(place, ctx, forbidden)
+            if escape is None:
+                return None
 
         from_place = bfs_path(place, escape, ctx.width, ctx.height, blocked, max_len=30)
         if from_place is None:
@@ -69,29 +73,24 @@ class FarmObstaclesStrategy:
         return UnitPlan(path=full_path, bombs=[place], debug=f"farm obs={obs} place={place} escape={escape}")
 
     def _pick_escape(self, start: Pos, ctx: DecisionContext, forbidden: set[Pos]) -> Optional[Pos]:
-        # простой поиск по “кольцам” манхэттена
+        # BFS-подобный подбор “первой безопасной” клетки в радиусе
         for radius in range(1, 10):
             x0, y0 = start
-            candidates: list[Pos] = []
+            for dx, dy in [(radius,0),(-radius,0),(0,radius),(0,-radius)]:
+                p = (x0 + dx, y0 + dy)
+                if 0 <= p[0] < ctx.width and 0 <= p[1] < ctx.height and p not in forbidden:
+                    return p
+            # ромб манхэттена
             for dx in range(-radius, radius + 1):
                 dy = radius - abs(dx)
-                for sgn in (-1, 1):
-                    p = (x0 + dx, y0 + sgn * dy)
+                for sdy in (dy, -dy):
+                    p = (x0 + dx, y0 + sdy)
                     if 0 <= p[0] < ctx.width and 0 <= p[1] < ctx.height and p not in forbidden:
-                        candidates.append(p)
-                if dy == 0:
-                    continue
-            if candidates:
-                return candidates[0]
+                        return p
         return None
 
-
-def _blocked_cells(ctx: DecisionContext) -> set[Pos]:
-    blocked = set()
-    if not ctx.booster.can_pass_walls:
-        blocked |= ctx.walls
-    if not ctx.booster.can_pass_obstacles:
-        blocked |= ctx.obstacles
-    if not ctx.booster.can_pass_bombs:
-        blocked |= set(ctx.bombs.keys())
-    return blocked
+    def _any_free_neighbor(self, p: Pos, ctx: DecisionContext, forbidden: set[Pos]) -> Optional[Pos]:
+        for nb in neighbors4(p):
+            if 0 <= nb[0] < ctx.width and 0 <= nb[1] < ctx.height and nb not in forbidden:
+                return nb
+        return None

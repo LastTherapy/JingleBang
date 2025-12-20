@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from model import GameState, Bomber, Pos, BoosterState
+from model import GameState, Bomber, Pos
 
 
 @dataclass(frozen=True)
@@ -16,18 +16,12 @@ class UnitPlan:
 @dataclass(frozen=True)
 class DecisionContext:
     state: GameState
-    booster: BoosterState
-
     width: int
     height: int
-
     walls: set[Pos]
     obstacles: set[Pos]
-    bombs: dict[Pos, tuple[int, float]]  # pos -> (range, timer_sec)
-
+    bombs: dict[Pos, tuple[int, float]]  # pos -> (range, timer)
     danger: set[Pos]
-    mob_positions: set[Pos]
-    enemy_positions: set[Pos]
 
 
 class Strategy(Protocol):

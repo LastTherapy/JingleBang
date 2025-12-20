@@ -10,79 +10,83 @@ import requests
 from client import ApiClient
 from app.engine import DecisionEngine
 from app.state_cache import StateCache
+from model import GameState
 
 
 @dataclass
 class BotControl:
-    running: bool = True
     paused: bool = False
     loop_delay: float = 0.35
-    booster_refresh_s: float = 1.5  # как часто обновлять бустеры (сек)
 
 
-class BotRunner(threading.Thread):
-    def __init__(self, api: ApiClient, engine: DecisionEngine, cache: StateCache, control: BotControl, *, quiet: bool = False) -> None:
-        super().__init__(daemon=True)
+class BotRunner:
+    def __init__(
+        self,
+        api: ApiClient,
+        engine: DecisionEngine,
+        cache: StateCache,
+        control: BotControl,
+        *,
+        verbose: bool = True,
+    ) -> None:
         self.api = api
         self.engine = engine
         self.cache = cache
         self.control = control
-        self.quiet = quiet
+        self.verbose = verbose
 
-        self._last_booster_fetch = 0.0
-        self._booster = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
 
-    def run(self) -> None:
-        while self.control.running:
-            t0 = time.time()
-            if self.control.paused:
-                time.sleep(0.1)
-                continue
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run_loop, name="bot-loop", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+    def _log_state(self, state: GameState) -> None:
+        alive = sum(1 for b in state.bombers if b.alive)
+        print(f"[arena] round={state.round} score={state.raw_score} bombers={alive}/{len(state.bombers)} errors={state.errors}")
+
+    def _run_loop(self) -> None:
+        while not self._stop.is_set():
+            t0 = time.perf_counter()
 
             try:
                 state = self.api.get_arena()
                 self.cache.set_state(state)
+                self.cache.set_error("")
+                if self.verbose:
+                    self._log_state(state)
             except requests.RequestException as exc:
-                self.cache.set_error(f"[arena] request error: {exc}")
-                time.sleep(0.5)
+                msg = f"[arena] request error: {exc}"
+                self.cache.set_error(msg)
+                if self.verbose:
+                    print(msg)
+                time.sleep(1.0)
                 continue
 
-            # booster state (кешируем)
-            try:
-                if self._booster is None or (time.time() - self._last_booster_fetch) >= self.control.booster_refresh_s:
-                    self._booster = self.api.get_booster_state()
-                    self._last_booster_fetch = time.time()
-                    self.cache.set_booster(self._booster)
-            except requests.RequestException as exc:
-                # не фейлим тик — просто оставляем старое значение
-                self.cache.set_error(f"[booster] request error: {exc}")
-
-            booster = self._booster
-            if booster is None:
-                time.sleep(self.control.loop_delay)
-                continue
-
-            if not self.quiet:
-                alive = sum(1 for b in state.bombers if b.alive)
-                print(f"[arena] round={state.round} score={state.raw_score} alive={alive}/{len(state.bombers)} errors={state.errors}")
-
-            try:
-                commands = self.engine.decide(state, booster)
-            except Exception as exc:
-                self.cache.set_error(f"[engine] error: {exc}")
-                time.sleep(self.control.loop_delay)
-                continue
-
-            if commands:
+            if not self.control.paused:
                 try:
-                    resp = self.api.send_move(commands)
-                    self.cache.set_move_response(resp)
-                    if not self.quiet:
-                        print(f"[move] code={resp.get('code')} errors={resp.get('errors')}")
+                    commands = self.engine.decide(state)
+                    if commands:
+                        resp = self.api.send_move(commands)
+                        self.cache.set_move_response(resp)
+                        if self.verbose:
+                            print(f"[move] code={resp.get('code')} errors={resp.get('errors')}")
                 except requests.RequestException as exc:
-                    self.cache.set_error(f"[move] request error: {exc}")
+                    msg = f"[move] request error: {exc}"
+                    self.cache.set_error(msg)
+                    if self.verbose:
+                        print(msg)
 
-            t1 = time.time()
-            self.cache.set_tick_ms((t1 - t0) * 1000.0)
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            self.cache.set_tick_ms(dt_ms)
 
-            time.sleep(max(0.0, self.control.loop_delay))
+            time.sleep(max(0.01, float(self.control.loop_delay)))

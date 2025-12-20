@@ -5,12 +5,18 @@ from typing import Callable
 
 from strategies.base import Strategy
 
+
 StrategyFactory = Callable[[], Strategy]
 
 
 @dataclass
 class StrategyRegistry:
     _factories: dict[str, StrategyFactory]
+    _descriptions: dict[str, str] | None = None
+
+    def list(self) -> list[dict[str, str]]:
+        desc = self._descriptions or {}
+        return [{"id": sid, "description": desc.get(sid, "")} for sid in sorted(self._factories.keys())]
 
     def list_ids(self) -> list[str]:
         return sorted(self._factories.keys())
