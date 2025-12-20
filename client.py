@@ -11,8 +11,10 @@ from model import GameState, MoveCommand
 
 
 class ApiClient:
-    """
-    Обёртка над HTTP запросами к API игры с простым ограничением по RPS.
+    """HTTP client with a strict min interval between ANY requests.
+
+    - If max_rps=1 => min_interval=1.0 sec
+    - If max_rps=2 => min_interval=0.5 sec  (GET arena + POST move within a second)
     """
 
     def __init__(
@@ -21,61 +23,58 @@ class ApiClient:
         token: str,
         *,
         max_rps: float = 2.0,
-        out_dir: str | Path = "out",
-        timeout: float = 5.0,
+        timeout: float = 10.0,
+        debug_dir: str = "debug",
+        session: Optional[requests.Session] = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.session = requests.Session()
-        self.session.headers.update({"accept": "application/json", "X-Auth-Token": token})
+        self.base_url = base_url.rstrip("/") + "/"
+        self.token = token
+        self.timeout = float(timeout)
+        self.max_rps = float(max_rps)
+        self.min_interval = 1.0 / self.max_rps if self.max_rps > 0 else 0.0
 
-        self.min_interval = 1.0 / max_rps
-        self.last_request_ts: float = 0.0
-        self.timeout = timeout
+        self._last_req_ts = 0.0
+        self._session = session or requests.Session()
 
-        self.out_dir = Path(out_dir)
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._debug_dir = Path(debug_dir)
+        self._debug_dir.mkdir(parents=True, exist_ok=True)
 
     def _rate_limit(self) -> None:
+        if self.min_interval <= 0:
+            return
         now = time.perf_counter()
-        delta = now - self.last_request_ts
+        delta = now - self._last_req_ts
         if delta < self.min_interval:
             time.sleep(self.min_interval - delta)
+        self._last_req_ts = time.perf_counter()
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         self._rate_limit()
-        url = f"{self.base_url}/{path.lstrip('/')}"
-        response = self.session.request(method, url, timeout=self.timeout, **kwargs)
-        self.last_request_ts = time.perf_counter()
-        return response
+        url = self.base_url + path.lstrip("/")
+        headers = kwargs.pop("headers", {})
+        headers.update({"accept": "application/json", "X-Auth-Token": self.token})
+        return self._session.request(method, url, headers=headers, timeout=self.timeout, **kwargs)
+
+    def _save_debug(self, filename: str, data: object) -> None:
+        try:
+            (self._debug_dir / filename).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def get_arena(self) -> GameState:
-        response = self._request("GET", "arena")
-        response.raise_for_status()
-        return GameState.from_dict(response.json())
+        r = self._request("GET", "arena")
+        r.raise_for_status()
+        data = r.json()
+        self._save_debug("last_arena.json", data)
+        return GameState.from_dict(data)
 
     def send_move(self, commands: Iterable[MoveCommand]) -> dict:
-        payload = {"bombers": [cmd.to_dict() for cmd in commands]}
-        response = self._request("POST", "move", json=payload)
-        # Сервер возвращает PublicError с кодом; не бросаем исключение сразу, чтобы можно было логировать ошибки.
+        payload = {"bombers": [c.to_dict() for c in commands]}
+        r = self._request("POST", "move", json=payload)
+        self._save_debug("last_move_request.json", payload)
         try:
-            response.raise_for_status()
-        finally:
-            self._save_debug("last_move_request.json", payload)
-            self._save_debug("last_move_response.json", response.json())
-        return response.json()
-
-    def get_boosters(self) -> dict:
-        response = self._request("GET", "booster")
-        response.raise_for_status()
-        return response.json()
-
-    def buy_booster(self, booster: dict) -> dict:
-        response = self._request("POST", "booster", json=booster)
-        response.raise_for_status()
-        return response.json()
-
-    def _save_debug(self, filename: str, data: dict) -> Path:
-        path = self.out_dir / filename
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return path
+            self._save_debug("last_move_response.json", r.json())
+        except Exception:
+            pass
+        r.raise_for_status()
+        return r.json()

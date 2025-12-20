@@ -3,17 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from model import GameState, MoveCommand, Pos, Bomber
-from strategies.base import DecisionContext, UnitPlan, Strategy
-from services.danger import build_danger
-from app.registry import StrategyRegistry
 from app.assignments import AssignmentStore
+from app.registry import StrategyRegistry
+from model import Bomber, GameState, MoveCommand, Pos
+from strategies.base import DecisionContext, Strategy, UnitPlan
 
 
-@dataclass(frozen=True)
+@dataclass
 class EngineConfig:
-    max_path: int = 30  # Ограничение API. См. правила. 
-    danger_timer: float = 2.5  # Таймер бомбы, после которого клетку считаем опасной.
+    max_path: int = 30
 
 
 class DecisionEngine:
@@ -21,20 +19,13 @@ class DecisionEngine:
         self.registry = registry
         self.assignments = assignments
         self.cfg = cfg
-        self._instances: dict[tuple[str, str], Strategy] = {}
+        self._instances: dict[tuple[str, str], Strategy] = {}  # (bomber_id, strategy_id) -> instance
 
     def decide(self, state: GameState) -> list[MoveCommand]:
         walls = set(state.arena.walls)
         obstacles = set(state.arena.obstacles)
-        bombs = {b.pos: (b.range, b.timer) for b in state.arena.bombs}
-
-        danger = build_danger(
-            bombs=bombs,
-            timer_threshold=self.cfg.danger_timer,
-            walls=walls,
-            obstacles=obstacles,
-            map_size=state.map_size,
-        )
+        bomb_cells = {b.pos for b in state.arena.bombs}
+        mob_cells = {m.pos for m in state.mobs if int(m.safe_time) <= 0}
 
         ctx = DecisionContext(
             state=state,
@@ -42,28 +33,28 @@ class DecisionEngine:
             height=state.map_size[1],
             walls=walls,
             obstacles=obstacles,
-            bombs=bombs,
-            danger=danger,
+            bomb_cells=bomb_cells,
+            mob_cells=mob_cells,
         )
 
         cmds: list[MoveCommand] = []
-        for unit in state.bombers:
-            if not unit.alive:
-                continue
-            if not unit.can_move:
+        for b in state.bombers:
+            if not b.alive or not b.can_move:
                 continue
 
-            strategy_id = self.assignments.get_for(unit.id)
-            plan = self._decide_one(unit, strategy_id, ctx)
+            sid = self.assignments.get_for(b.id)
+            if sid not in self.registry.factories:
+                sid = self.assignments.get_default()
+
+            plan = self._decide_one(b, sid, ctx)
             if plan is None:
                 continue
 
-            plan = self._validate_and_clip(unit, plan, ctx)
+            plan = self._validate_and_clip(b, plan, ctx)
             if plan is None:
                 continue
 
-            cmds.append(MoveCommand(bomber_id=unit.id, path=plan.path, bombs=plan.bombs))
-
+            cmds.append(MoveCommand(bomber_id=b.id, path=plan.path, bombs=plan.bombs))
         return cmds
 
     def _decide_one(self, unit: Bomber, strategy_id: str, ctx: DecisionContext) -> Optional[UnitPlan]:
@@ -75,20 +66,19 @@ class DecisionEngine:
         return strat.decide_for_unit(unit, ctx)
 
     def _validate_and_clip(self, unit: Bomber, plan: UnitPlan, ctx: DecisionContext) -> Optional[UnitPlan]:
-        # 1) длина пути
-        path = plan.path[: self.cfg.max_path]
-        bombs = list(plan.bombs or [])
+        path = (plan.path or [])[: self.cfg.max_path]
+        bombs = plan.bombs or []
 
-        # 2) bombs должны встречаться в path
+        # bombs must be inside path
         path_set = set(path)
-        bombs = [b for b in bombs if b in path_set]
+        bombs = [p for p in bombs if p in path_set]
 
-        # 3) не больше доступных бомб
+        # bombs <= available
         if len(bombs) > unit.bombs_available:
             bombs = bombs[: unit.bombs_available]
 
-        # 4) проверка смежности + блокирующих клеток
-        blocked = ctx.walls | ctx.obstacles | set(ctx.bombs.keys())
+        # Validate 4-neighborhood and blocked cells
+        blocked = ctx.walls | ctx.obstacles | ctx.bomb_cells
         safe_path: list[Pos] = []
         cur = unit.pos
         for step in path:
@@ -103,5 +93,5 @@ class DecisionEngine:
             return None
 
         safe_set = set(safe_path)
-        bombs = [b for b in bombs if b in safe_set]
+        bombs = [p for p in bombs if p in safe_set]
         return UnitPlan(path=safe_path, bombs=bombs, debug=plan.debug)

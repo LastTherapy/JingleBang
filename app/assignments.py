@@ -9,10 +9,9 @@ from pathlib import Path
 @dataclass
 class AssignmentStore:
     path: Path
-    default_strategy: str = "farm_obstacles"
-
     _lock: threading.RLock = threading.RLock()
-    _data: dict[str, str] | None = None  # bomber_id -> strategy_id
+    _data: dict[str, str] = None  # bomber_id -> strategy_id
+    _default: str = "farm_obstacles"
 
     def __post_init__(self) -> None:
         self._data = {}
@@ -21,31 +20,31 @@ class AssignmentStore:
     def load(self) -> None:
         with self._lock:
             if self.path.exists():
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
-                self.default_strategy = raw.get("default", self.default_strategy)
-                self._data = dict(raw.get("per_bomber", {}))
+                self._data = json.loads(self.path.read_text(encoding="utf-8"))
             else:
                 self._data = {}
 
     def save(self) -> None:
         with self._lock:
-            payload = {"default": self.default_strategy, "per_bomber": self._data}
-            self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.path.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def get_for(self, bomber_id: str) -> str:
         with self._lock:
-            return self._data.get(bomber_id, self.default_strategy)
+            return self._data.get(bomber_id, self._default)
 
     def set_for(self, bomber_id: str, strategy_id: str) -> None:
         with self._lock:
             self._data[bomber_id] = strategy_id
             self.save()
 
+    def dump(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._data)
+
     def set_default(self, strategy_id: str) -> None:
         with self._lock:
-            self.default_strategy = strategy_id
-            self.save()
+            self._default = strategy_id
 
-    def dump(self) -> dict:
+    def get_default(self) -> str:
         with self._lock:
-            return {"default": self.default_strategy, "per_bomber": dict(self._data)}
+            return self._default
