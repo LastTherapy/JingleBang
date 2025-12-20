@@ -2,3 +2,4 @@ poetry.lock
 venv
 .venv
 .idea
+__pycache__
