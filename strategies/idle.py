@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from strategies.base import Strategy, DecisionContext, UnitPlan
 from model import Bomber
+from strategies.base import DecisionContext, Strategy, UnitPlan
 
 
 @dataclass

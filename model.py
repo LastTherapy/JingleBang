@@ -1,35 +1,45 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
-
+from typing import Any, Dict, List, Tuple, Optional
 
 Pos = Tuple[int, int]
 
 
-@dataclass
+def _pos(v: Any) -> Pos:
+    return (int(v[0]), int(v[1]))
+
+
+@dataclass(frozen=True)
 class Bomb:
     pos: Pos
     range: int
-    timer: float
+    timer: float  # seconds to explosion
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Bomb":
-        return Bomb(
-            pos=(int(d["pos"][0]), int(d["pos"][1])),
-            range=int(d.get("range", 1)),
-            timer=float(d.get("timer", 0.0)),
-        )
+        return Bomb(pos=_pos(d["pos"]), range=int(d["range"]), timer=float(d["timer"]))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "pos": [self.pos[0], self.pos[1]],
-            "range": self.range,
-            "timer": self.timer,
-        }
+        return {"pos": [self.pos[0], self.pos[1]], "range": self.range, "timer": self.timer}
 
 
-@dataclass
+@dataclass(frozen=True)
+class Arena:
+    walls: List[Pos]
+    obstacles: List[Pos]
+    bombs: List[Bomb]
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "Arena":
+        return Arena(
+            walls=[_pos(x) for x in d.get("walls", [])],
+            obstacles=[_pos(x) for x in d.get("obstacles", [])],
+            bombs=[Bomb.from_dict(x) for x in d.get("bombs", [])],
+        )
+
+
+@dataclass(frozen=True)
 class Bomber:
     id: str
     alive: bool
@@ -38,104 +48,86 @@ class Bomber:
     bombs_available: int
     can_move: bool
     tier: str
-    safe_time: int
+    safe_time: int  # ms
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Bomber":
         return Bomber(
-            id=d["id"],
+            id=str(d["id"]),
             alive=bool(d["alive"]),
-            pos=(int(d["pos"][0]), int(d["pos"][1])),
-            armor=int(d["armor"]),
-            bombs_available=int(d["bombs_available"]),
-            can_move=bool(d["can_move"]),
-            tier=str(d["tier"]),
-            safe_time=int(d["safe_time"]),
+            pos=_pos(d["pos"]),
+            armor=int(d.get("armor", 0)),
+            bombs_available=int(d.get("bombs_available", 0)),
+            can_move=bool(d.get("can_move", True)),
+            tier=str(d.get("tier", "")),
+            safe_time=int(d.get("safe_time", 0)),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "alive": self.alive,
-            "pos": [self.pos[0], self.pos[1]],
-            "armor": self.armor,
-            "bombs_available": self.bombs_available,
-            "can_move": self.can_move,
-            "tier": self.tier,
-            "safe_time": self.safe_time,
-        }
 
-
-@dataclass
+@dataclass(frozen=True)
 class EnemyBomber:
     id: str
     pos: Pos
-    safe_time: int
+    safe_time: int  # ms
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "EnemyBomber":
         return EnemyBomber(
-            id=d["id"],
-            pos=(int(d["pos"][0]), int(d["pos"][1])),
+            id=str(d["id"]),
+            pos=_pos(d["pos"]),
             safe_time=int(d.get("safe_time", 0)),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "pos": [self.pos[0], self.pos[1]],
-            "safe_time": self.safe_time,
-        }
 
-
-@dataclass
+@dataclass(frozen=True)
 class Mob:
     id: str
-    type: str
     pos: Pos
-    safe_time: int
+    safe_time: int  # ms
+    type: str
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Mob":
         return Mob(
-            id=d["id"],
-            type=d["type"],
-            pos=(int(d["pos"][0]), int(d["pos"][1])),
-            safe_time=int(d["safe_time"]),
+            id=str(d["id"]),
+            pos=_pos(d["pos"]),
+            safe_time=int(d.get("safe_time", 0)),
+            type=str(d.get("type", "")),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "type": self.type,
-            "pos": [self.pos[0], self.pos[1]],
-            "safe_time": self.safe_time,
-        }
 
-
-@dataclass
-class Arena:
-    obstacles: List[Pos]
-    walls: List[Pos]
-    bombs: List[Bomb]
+@dataclass(frozen=True)
+class BoosterState:
+    points: int
+    bomb_range: int
+    bomb_delay: int  # ms
+    bombs: int
+    bombers: int
+    armor: int
+    speed: int
+    view: int
+    can_pass_bombs: bool
+    can_pass_obstacles: bool
+    can_pass_walls: bool
 
     @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "Arena":
-        return Arena(
-            obstacles=[(int(x), int(y)) for x, y in d.get("obstacles", [])],
-            walls=[(int(x), int(y)) for x, y in d.get("walls", [])],
-            bombs=[Bomb.from_dict(b) for b in d.get("bombs", [])],
+    def from_dict(d: Dict[str, Any]) -> "BoosterState":
+        return BoosterState(
+            points=int(d.get("points", 0)),
+            bomb_range=int(d.get("bomb_range", 1)),
+            bomb_delay=int(d.get("bomb_delay", 3000)),
+            bombs=int(d.get("bombs", 1)),
+            bombers=int(d.get("bombers", 1)),
+            armor=int(d.get("armor", 0)),
+            speed=int(d.get("speed", 1)),
+            view=int(d.get("view", 10)),
+            can_pass_bombs=bool(d.get("can_pass_bombs", False)),
+            can_pass_obstacles=bool(d.get("can_pass_obstacles", False)),
+            can_pass_walls=bool(d.get("can_pass_walls", False)),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "obstacles": [[x, y] for x, y in self.obstacles],
-            "walls": [[x, y] for x, y in self.walls],
-            "bombs": [b.to_dict() for b in self.bombs],
-        }
 
-
-@dataclass
+@dataclass(frozen=True)
 class GameState:
     player: str
     round: str
@@ -145,40 +137,26 @@ class GameState:
     enemies: List[EnemyBomber]
     mobs: List[Mob]
     code: int
-    errors: List[Any]
+    errors: List[str]
     raw_score: int
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "GameState":
         return GameState(
-            player=d["player"],
-            round=d["round"],
+            player=str(d.get("player", "")),
+            round=str(d.get("round", "")),
             map_size=(int(d["map_size"][0]), int(d["map_size"][1])),
             bombers=[Bomber.from_dict(x) for x in d.get("bombers", [])],
-            arena=Arena.from_dict(d["arena"]),
+            arena=Arena.from_dict(d.get("arena", {})),
             enemies=[EnemyBomber.from_dict(x) for x in d.get("enemies", [])],
             mobs=[Mob.from_dict(x) for x in d.get("mobs", [])],
             code=int(d.get("code", 0)),
-            errors=d.get("errors", []),
+            errors=[str(x) for x in d.get("errors", [])],
             raw_score=int(d.get("raw_score", 0)),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "player": self.player,
-            "round": self.round,
-            "map_size": [self.map_size[0], self.map_size[1]],
-            "bombers": [b.to_dict() for b in self.bombers],
-            "arena": self.arena.to_dict(),
-            "enemies": [e.to_dict() for e in self.enemies],
-            "mobs": [m.to_dict() for m in self.mobs],
-            "code": self.code,
-            "errors": self.errors,
-            "raw_score": self.raw_score,
-        }
 
-
-@dataclass
+@dataclass(frozen=True)
 class MoveCommand:
     bomber_id: str
     path: List[Pos]

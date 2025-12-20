@@ -3,17 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from model import GameState, MoveCommand, Pos, Bomber
+from model import GameState, MoveCommand, Pos, Bomber, BoosterState
 from strategies.base import DecisionContext, UnitPlan, Strategy
 from services.danger import build_danger
 from app.registry import StrategyRegistry
 from app.assignments import AssignmentStore
 
 
-@dataclass(frozen=True)
+@dataclass
 class EngineConfig:
-    max_path: int = 30  # Ограничение API. См. правила. 
-    danger_timer: float = 2.5  # Таймер бомбы, после которого клетку считаем опасной.
+    max_path: int = 30
+    danger_timer: float = 2.5
 
 
 class DecisionEngine:
@@ -23,7 +23,7 @@ class DecisionEngine:
         self.cfg = cfg
         self._instances: dict[tuple[str, str], Strategy] = {}
 
-    def decide(self, state: GameState) -> list[MoveCommand]:
+    def decide(self, state: GameState, booster: BoosterState) -> list[MoveCommand]:
         walls = set(state.arena.walls)
         obstacles = set(state.arena.obstacles)
         bombs = {b.pos: (b.range, b.timer) for b in state.arena.bombs}
@@ -33,17 +33,22 @@ class DecisionEngine:
             timer_threshold=self.cfg.danger_timer,
             walls=walls,
             obstacles=obstacles,
-            map_size=state.map_size,
         )
+
+        mob_positions = {m.pos for m in state.mobs if int(m.safe_time) <= 0}
+        enemy_positions = {e.pos for e in state.enemies if int(e.safe_time) <= 0}
 
         ctx = DecisionContext(
             state=state,
+            booster=booster,
             width=state.map_size[0],
             height=state.map_size[1],
             walls=walls,
             obstacles=obstacles,
             bombs=bombs,
             danger=danger,
+            mob_positions=mob_positions,
+            enemy_positions=enemy_positions,
         )
 
         cmds: list[MoveCommand] = []
@@ -75,23 +80,30 @@ class DecisionEngine:
         return strat.decide_for_unit(unit, ctx)
 
     def _validate_and_clip(self, unit: Bomber, plan: UnitPlan, ctx: DecisionContext) -> Optional[UnitPlan]:
-        # 1) длина пути
         path = plan.path[: self.cfg.max_path]
-        bombs = list(plan.bombs or [])
+        bombs = plan.bombs or []
 
-        # 2) bombs должны встречаться в path
+        # bombs должны быть в path
         path_set = set(path)
         bombs = [b for b in bombs if b in path_set]
 
-        # 3) не больше доступных бомб
+        # не больше доступных бомб
         if len(bombs) > unit.bombs_available:
             bombs = bombs[: unit.bombs_available]
 
-        # 4) проверка смежности + блокирующих клеток
-        blocked = ctx.walls | ctx.obstacles | set(ctx.bombs.keys())
+        # blocked учитывает boosters passability
+        blocked = set()
+        if not ctx.booster.can_pass_walls:
+            blocked |= ctx.walls
+        if not ctx.booster.can_pass_obstacles:
+            blocked |= ctx.obstacles
+        if not ctx.booster.can_pass_bombs:
+            blocked |= set(ctx.bombs.keys())
+
         safe_path: list[Pos] = []
         cur = unit.pos
         for step in path:
+            # только 4-way
             if abs(step[0] - cur[0]) + abs(step[1] - cur[1]) != 1:
                 break
             if step in blocked:
@@ -104,4 +116,5 @@ class DecisionEngine:
 
         safe_set = set(safe_path)
         bombs = [b for b in bombs if b in safe_set]
+
         return UnitPlan(path=safe_path, bombs=bombs, debug=plan.debug)
