@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
 from collections import deque
-from typing import Callable, Dict, Iterable, Optional, Tuple, List
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from model import Bomber, Pos
+from model import Bomber, Pos, Mob
 from strategies.base import Strategy, DecisionContext, UnitPlan
-
 from services.danger import danger_from_bomb
 
 
@@ -20,209 +20,314 @@ def inside(p: Pos, w: int, h: int) -> bool:
     return 0 <= x < w and 0 <= y < h
 
 
+def manhattan(a: Pos, b: Pos) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
 @dataclass
 class SafeBombConfig:
-    bomb_timer: float = 3.0      # таймер "нашей" бомбы (сек)
-    bomb_range: int = 3          # радиус "нашей" бомбы
-    safe_margin: float = 0.15    # запас по времени (сек) чтобы не ходить "впритык"
-    max_plan_len: int = 30       # лимит API
+    # НАШИ параметры
+    my_bomb_range: int = 1
+    my_bomb_timer: float = 8.0
+
+    safe_margin: float = 0.2
+
+    # поведение
+    explore_horizon: int = 16
+    ally_avoid: bool = True
+
+    # мобы/призраки
+    mob_avoid_dist: int = 1  # избегаем клеток с dist <= 1 до моба
 
 
 class SafeBombStrategy(Strategy):
-    """
-    Стратегия "безопасная бомба":
-    - не ставит бомбу, если она накроет союзника (по текущим позициям)
-    - ставит бомбу только если есть гарантированный уход по таймеру
-    - не входит в зону взрыва бомб, если не успевает покинуть её до взрыва
-    """
-
     def __init__(self, cfg: SafeBombConfig | None = None) -> None:
         self.cfg = cfg or SafeBombConfig()
+        self._prev_pos: Optional[Pos] = None
 
-    # -------------------- публичный метод стратегии --------------------
+        # НОВОЕ: “коммит” на отход после бомбы (убирает метание и самозапирание)
+        self._escape_plan: deque[Pos] = deque()
 
     def decide_for_unit(self, unit: Bomber, ctx: DecisionContext) -> Optional[UnitPlan]:
         w, h = ctx.width, ctx.height
-        blocked = set(ctx.walls) | set(ctx.obstacles) | set(ctx.bombs.keys())
 
-        # precompute: для каждой клетки -> минимальное (самое раннее) время взрыва среди бомб, которые её накрывают
-        min_explosion = self._min_explosion_map(
-            bombs=list(ctx.bombs.items()),  # (pos -> (range, timer))
-            walls=set(ctx.walls),
-            obstacles=set(ctx.obstacles),
-            map_size=(w, h),
-        )
+        walls = set(ctx.walls)
+        obstacles = set(ctx.obstacles)
+        bombs_cells = set(ctx.bombs.keys())
+        blocked_static = walls | obstacles | bombs_cells
 
-        # 1) Если текущая позиция не переживает ближайшую секунду — срочно эвакуируемся
-        if not self._safe_to_stay(unit.pos, leave_time=1.0, min_explosion=min_explosion):
-            esc = self._escape_plan(
-                start=unit.pos,
-                start_time=0,
-                blocked=blocked,
-                min_explosion=min_explosion,
-                w=w,
-                h=h,
-                goal_pred=lambda p, t: self._is_stably_safe(p, t, min_explosion),
-                max_time=10,  # сек-горизонт поиска эвакуации
-            )
-            if esc:
-                return UnitPlan(path=esc, bombs=[], debug="escape: start unsafe")
+        allies = [b for b in ctx.state.bombers if b.alive and b.id != unit.id]
+        ally_cells = {a.pos for a in allies}
+
+        mobs = list(ctx.state.mobs or [])
+        mob_kill_zone = self._mob_kill_zone(mobs, w, h, dist=self.cfg.mob_avoid_dist)
+
+        # чем нельзя ходить в обычном режиме
+        blocked_move = set(blocked_static) | mob_kill_zone
+        if self.cfg.ally_avoid:
+            blocked_move |= ally_cells
+
+        # карта “когда клетка взорвётся” для УЖЕ существующих бомб (в т.ч. вражеских)
+        min_explosion = self._min_explosion_map(ctx, walls, obstacles, (w, h))
+
+        # A) если у нас есть план отхода — продолжаем
+        if self._escape_plan:
+            step = self._escape_plan[0]
+            if self._is_step_valid(unit.pos, step, blocked_move, min_explosion, w, h):
+                self._escape_plan.popleft()
+                self._prev_pos = unit.pos
+                return UnitPlan(path=[step], bombs=[], debug="follow escape plan")
+            else:
+                # план сломался — сбрасываем
+                self._escape_plan.clear()
+
+        # B) если рядом моб/призрак или мы попали в опасную клетку — уходим
+        if unit.pos in mob_kill_zone or (not self._safe_to_stay(unit.pos, leave_time=1.0, min_explosion=min_explosion)):
+            step = self._panic_step(unit, blocked_move, min_explosion, mobs, w, h)
+            if step is not None:
+                self._prev_pos = unit.pos
+                return UnitPlan(path=[step], bombs=[], debug="panic evade")
             return None
 
-        # 2) Пытаемся поставить безопасную бомбу (если есть)
+        # C1) попытка: поставить бомбу так, чтобы ломать препятствия (максимум)
         if unit.bombs_available > 0:
-            plan = self._try_bomb_then_escape(unit, ctx, blocked, min_explosion)
-            if plan:
+            plan = self._try_bomb_obstacles(unit, ctx, blocked_static, ally_cells, mob_kill_zone, min_explosion)
+            if plan is not None:
+                self._prev_pos = unit.pos
                 return plan
 
-        # 3) Если рядом опасно (в danger по конфигу движка) — отходим в "стабильно безопасную" клетку
-        if unit.pos in ctx.danger:
-            esc = self._escape_plan(
-                start=unit.pos,
-                start_time=0,
-                blocked=blocked,
-                min_explosion=min_explosion,
-                w=w,
-                h=h,
-                goal_pred=lambda p, t: self._is_stably_safe(p, t, min_explosion),
-                max_time=10,
-            )
-            if esc:
-                return UnitPlan(path=esc, bombs=[], debug="escape: ctx.danger")
+            # C2) попытка: бомба рядом с мобом (аккуратно)
+            plan = self._try_bomb_mobs(unit, ctx, blocked_static, ally_cells, mob_kill_zone, min_explosion, mobs)
+            if plan is not None:
+                self._prev_pos = unit.pos
+                return plan
 
-        # 4) Иначе — ничего не делаем (пусть другие стратегии/назначения рулят)
+        # D) идти к ближайшей “позиции постановки” рядом с препятствием (BFS, без хаоса)
+        goals = self._bomb_positions_for_obstacles(obstacles, blocked_move, w, h)
+        if goals:
+            target = self._pick_goal_spread(goals, unit.id)
+            path = self._bfs(unit.pos, {target}, blocked_move, w, h)
+            if path:
+                step = self._anti_pingpong(unit.pos, path[0], blocked_move, min_explosion, w, h)
+                self._prev_pos = unit.pos
+                return UnitPlan(path=[step], bombs=[], debug="go to obstacle bomb-pos")
+
+        # E) разведка (с разнесением и анти-циклом)
+        step = self._explore_step(unit, allies, blocked_move, min_explosion, w, h)
+        if step is not None:
+            self._prev_pos = unit.pos
+            return UnitPlan(path=[step], bombs=[], debug="explore")
+
         return None
 
-    # -------------------- логика бомбы --------------------
+    # --------------------- bomb: obstacles ---------------------
 
-    def _try_bomb_then_escape(
+    def _try_bomb_obstacles(
             self,
             unit: Bomber,
             ctx: DecisionContext,
-            blocked: set[Pos],
+            blocked_static: Set[Pos],
+            ally_cells: Set[Pos],
+            mob_kill_zone: Set[Pos],
             min_explosion_existing: Dict[Pos, float],
     ) -> Optional[UnitPlan]:
         w, h = ctx.width, ctx.height
-        allies = [b for b in ctx.state.bombers if b.alive and b.id != unit.id]
+        walls = set(ctx.walls)
+        obstacles = set(ctx.obstacles)
 
-        # Куда можно сделать первый шаг (в твоём engine бомба должна быть в path, поэтому кладём бомбу на первую клетку path)
-        candidates = []
+        candidates: List[Tuple[int, Pos, List[Pos]]] = []
+        for bomb_cell in neighbors4(unit.pos):
+            if not inside(bomb_cell, w, h):
+                continue
+            if bomb_cell in blocked_static:
+                continue
+            if bomb_cell in mob_kill_zone:
+                continue
+
+            blast = danger_from_bomb(
+                pos=bomb_cell,
+                bomb_range=self.cfg.my_bomb_range,
+                walls=walls,
+                obstacles=obstacles,
+                bombs_as_stoppers=set(ctx.bombs.keys()) | {bomb_cell},
+                map_size=(w, h),
+            )
+
+            destroyed = len(blast & obstacles)
+            if destroyed <= 0:
+                continue
+
+            # friendly-fire запрет по текущим позициям
+            if blast & ally_cells:
+                continue
+
+            explode_at = 1.0 + self.cfg.my_bomb_timer
+            min_explosion_new = dict(min_explosion_existing)
+            for p in blast:
+                min_explosion_new[p] = min(min_explosion_new.get(p, float("inf")), explode_at)
+
+            # ВАЖНО: после постановки бомбы её клетка станет блоком.
+            blocked_after = set(blocked_static) | {bomb_cell} | mob_kill_zone | ally_cells
+
+            escape = self._time_bfs_first(
+                start=bomb_cell,
+                start_time=1,
+                blocked=blocked_after,
+                min_explosion=min_explosion_new,
+                w=w, h=h,
+                max_time=int(self.cfg.my_bomb_timer) + 6,
+                goal_pred=lambda p, t: (p not in blast) and self._safe_to_stay(p, leave_time=explode_at + 0.5, min_explosion=min_explosion_new),
+            )
+            if not escape:
+                continue
+
+            candidates.append((destroyed, bomb_cell, escape))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        destroyed, bomb_cell, escape = candidates[0]
+
+        # Коммитим отход: на следующих тиках будем шагать по escape
+        self._escape_plan = deque(escape)
+
+        # В этом тике: шаг в bomb_cell и сразу закладка
+        return UnitPlan(path=[bomb_cell], bombs=[bomb_cell], debug=f"bomb obstacles={destroyed}")
+
+    # --------------------- bomb: mobs/ghosts ---------------------
+
+    def _try_bomb_mobs(
+            self,
+            unit: Bomber,
+            ctx: DecisionContext,
+            blocked_static: Set[Pos],
+            ally_cells: Set[Pos],
+            mob_kill_zone: Set[Pos],
+            min_explosion_existing: Dict[Pos, float],
+            mobs: List[Mob],
+    ) -> Optional[UnitPlan]:
+        if not mobs:
+            return None
+
+        w, h = ctx.width, ctx.height
+        walls = set(ctx.walls)
+        obstacles = set(ctx.obstacles)
+
+        # выбираем “ближайшего опасного”
+        mobs_sorted = sorted(mobs, key=lambda m: manhattan(unit.pos, m.pos))
+        for mob in mobs_sorted[:3]:
+            # Ставим бомбу так, чтобы blast накрыл mob.pos.
+            # При range=1 это означает: бомба в соседней клетке от mob.pos.
+            for bomb_cell in neighbors4(mob.pos):
+                if not inside(bomb_cell, w, h):
+                    continue
+                if bomb_cell in blocked_static:
+                    continue
+                if bomb_cell in ally_cells:
+                    continue
+
+                # Мы должны прийти в bomb_cell из соседней клетки (unit.pos) одним шагом, т.е. bomb_cell соседняя к unit.pos
+                if manhattan(unit.pos, bomb_cell) != 1:
+                    continue
+
+                blast = danger_from_bomb(
+                    pos=bomb_cell,
+                    bomb_range=self.cfg.my_bomb_range,
+                    walls=walls,
+                    obstacles=obstacles,
+                    bombs_as_stoppers=set(ctx.bombs.keys()) | {bomb_cell},
+                    map_size=(w, h),
+                )
+                if mob.pos not in blast:
+                    continue
+
+                if blast & ally_cells:
+                    continue
+
+                explode_at = 1.0 + self.cfg.my_bomb_timer
+                min_explosion_new = dict(min_explosion_existing)
+                for p in blast:
+                    min_explosion_new[p] = min(min_explosion_new.get(p, float("inf")), explode_at)
+
+                blocked_after = set(blocked_static) | {bomb_cell} | ally_cells
+                # После постановки хотим быстро увеличить дистанцию до mob (не стоять рядом)
+                escape = self._time_bfs_first(
+                    start=bomb_cell,
+                    start_time=1,
+                    blocked=blocked_after,
+                    min_explosion=min_explosion_new,
+                    w=w, h=h,
+                    max_time=int(self.cfg.my_bomb_timer) + 6,
+                    goal_pred=lambda p, t: (p not in blast)
+                                           and (manhattan(p, mob.pos) >= 2)
+                                           and self._safe_to_stay(p, leave_time=explode_at + 0.5, min_explosion=min_explosion_new),
+                )
+                if not escape:
+                    continue
+
+                self._escape_plan = deque(escape)
+                return UnitPlan(path=[bomb_cell], bombs=[bomb_cell], debug=f"bomb mob={mob.type}")
+
+        return None
+
+    # --------------------- goals & movement ---------------------
+
+    def _bomb_positions_for_obstacles(self, obstacles: Set[Pos], blocked: Set[Pos], w: int, h: int) -> Set[Pos]:
+        goals: Set[Pos] = set()
+        for ob in obstacles:
+            for nb in neighbors4(ob):
+                if inside(nb, w, h) and nb not in blocked:
+                    goals.add(nb)
+        return goals
+
+    def _pick_goal_spread(self, goals: Set[Pos], unit_id: str) -> Pos:
+        # детерминированный выбор цели из множества ближайших: чтобы разные бомберы чаще брали разные
+        g = sorted(goals)
+        idx = int(hashlib.md5(unit_id.encode("utf-8")).hexdigest(), 16) % len(g)
+        return g[idx]
+
+    def _explore_step(
+            self,
+            unit: Bomber,
+            allies: List[Bomber],
+            blocked: Set[Pos],
+            min_explosion: Dict[Pos, float],
+            w: int,
+            h: int,
+    ) -> Optional[Pos]:
+        ally_pos = [a.pos for a in allies]
+
+        candidates: List[Pos] = []
         for nb in neighbors4(unit.pos):
             if not inside(nb, w, h):
                 continue
             if nb in blocked:
                 continue
-            # клетка nb должна быть "проходима по времени" (после шага туда мы должны прожить хотя бы следующую секунду)
-            # после 1 шага мы оказываемся там на t=1 и проживаем до t=2
-            if not self._safe_to_stay(nb, leave_time=2.0, min_explosion=min_explosion_existing):
+            if not self._safe_to_stay(nb, leave_time=2.0, min_explosion=min_explosion):
                 continue
             candidates.append(nb)
 
-        # Немного приоритета: сначала те, что реально "имеют смысл бомбить"
-        candidates.sort(key=lambda p: 0 if self._has_bomb_value(p, ctx) else 1)
+        if not candidates:
+            return None
 
-        for bomb_cell in candidates:
-            if not self._has_bomb_value(bomb_cell, ctx):
-                continue
+        def score(p: Pos) -> float:
+            spread = min((manhattan(p, ap) for ap in ally_pos), default=5)
+            back_pen = 1000 if (self._prev_pos is not None and p == self._prev_pos) else 0
+            return spread * 10 - back_pen
 
-            # зона взрыва нашей потенциальной бомбы
-            blast = danger_from_bomb(
-                pos=bomb_cell,
-                bomb_range=self.cfg.bomb_range,
-                walls=set(ctx.walls),
-                obstacles=set(ctx.obstacles),
-                bombs_as_stoppers=set(ctx.bombs.keys()) | {bomb_cell},
-                map_size=(w, h),
-            )
+        best = max(candidates, key=score)
+        return self._anti_pingpong(unit.pos, best, blocked, min_explosion, w, h)
 
-            # не вредим союзникам: если хоть один союзник СЕЙЧАС в blast — не ставим
-            if any(a.pos in blast for a in allies):
-                continue
+    # --------------------- safety / bombs map ---------------------
 
-            # добавляем "нашу" бомбу как будущий взрыв в абсолютном времени:
-            # мы придём на bomb_cell на t=1 и поставим бомбу => взрыв в t=1 + bomb_timer
-            new_explosion_time = 1.0 + self.cfg.bomb_timer
-            min_explosion = dict(min_explosion_existing)
-            for p in blast:
-                min_explosion[p] = min(min_explosion.get(p, float("inf")), new_explosion_time)
-
-            # После постановки бомбы клетка bomb_cell станет занятой бомбой: назад на неё заходить нельзя
-            blocked_after = set(blocked) | {bomb_cell}
-
-            # Нам нужен путь-эвакуация от bomb_cell (мы на ней в t=1) до клетки вне blast,
-            # причём по таймеру мы должны успеть выйти
-            escape = self._escape_plan(
-                start=bomb_cell,
-                start_time=1,
-                blocked=blocked_after,
-                min_explosion=min_explosion,
-                w=w,
-                h=h,
-                goal_pred=lambda p, t: (p not in blast) and self._is_stably_safe(p, t, min_explosion),
-                max_time=int(self.cfg.bomb_timer) + 3,  # небольшой запас по времени
-            )
-
-            if not escape:
-                continue
-
-            # итоговый план: 1) шаг на bomb_cell, 2) ставим бомбу там, 3) уходим по escape
-            path = [bomb_cell] + escape  # escape уже без стартовой клетки bomb_cell
-            path = path[: self.cfg.max_plan_len]
-            return UnitPlan(path=path, bombs=[bomb_cell], debug="bomb+escape safe")
-
-        return None
-
-    def _has_bomb_value(self, bomb_cell: Pos, ctx: DecisionContext) -> bool:
-        """Есть ли смысл ставить бомбу: она заденет моба/врага/препятствие."""
-        w, h = ctx.width, ctx.height
-        blast = danger_from_bomb(
-            pos=bomb_cell,
-            bomb_range=self.cfg.bomb_range,
-            walls=set(ctx.walls),
-            obstacles=set(ctx.obstacles),
-            bombs_as_stoppers=set(ctx.bombs.keys()) | {bomb_cell},
-            map_size=(w, h),
-        )
-
-        targets = set(ctx.state.arena.obstacles)
-        targets |= {m.pos for m in ctx.state.mobs}
-        targets |= {e.pos for e in ctx.state.enemies}
-
-        return any(t in blast for t in targets)
-
-    # -------------------- время/опасность --------------------
-
-    def _safe_to_stay(self, pos: Pos, leave_time: float, min_explosion: Dict[Pos, float]) -> bool:
-        """
-        pos безопасна, если ближайший взрыв, который накрывает pos, происходит строго позже leave_time.
-        leave_time = момент, когда мы гарантированно покидаем клетку.
-        """
-        t = min_explosion.get(pos)
-        if t is None:
-            return True
-        return t > (leave_time + self.cfg.safe_margin)
-
-    def _is_stably_safe(self, pos: Pos, current_time: int, min_explosion: Dict[Pos, float]) -> bool:
-        """
-        "Стабильно безопасно" — ближайший взрыв по этой клетке не скоро.
-        current_time = целое время (сек) после current_time шагов.
-        """
-        t = min_explosion.get(pos, float("inf"))
-        return t > (float(current_time) + 2.0)  # 2 секунды запаса
-
-    def _min_explosion_map(
-            self,
-            bombs: List[Tuple[Pos, Tuple[int, float]]],  # [(pos, (range, timer))]
-            walls: set[Pos],
-            obstacles: set[Pos],
-            map_size: Tuple[int, int],
-    ) -> Dict[Pos, float]:
+    def _min_explosion_map(self, ctx: DecisionContext, walls: Set[Pos], obstacles: Set[Pos], map_size: Tuple[int, int]) -> Dict[Pos, float]:
         out: Dict[Pos, float] = {}
-        stoppers = {p for p, _ in bombs}
-        for p, (rng, timer) in bombs:
+        stoppers = set(ctx.bombs.keys())
+        for p, (rng, timer) in ctx.bombs.items():
             blast = danger_from_bomb(
                 pos=p,
-                bomb_range=rng,
+                bomb_range=int(rng),
                 walls=walls,
                 obstacles=obstacles,
                 bombs_as_stoppers=stoppers,
@@ -232,70 +337,174 @@ class SafeBombStrategy(Strategy):
                 out[cell] = min(out.get(cell, float("inf")), float(timer))
         return out
 
-    # -------------------- time-aware BFS --------------------
+    def _safe_to_stay(self, pos: Pos, leave_time: float, min_explosion: Dict[Pos, float]) -> bool:
+        t = min_explosion.get(pos)
+        if t is None:
+            return True
+        return t > (leave_time + self.cfg.safe_margin)
 
-    def _escape_plan(
+    # --------------------- mobs ---------------------
+
+    def _mob_kill_zone(self, mobs: List[Mob], w: int, h: int, dist: int) -> Set[Pos]:
+        if dist <= 0 or not mobs:
+            return set()
+        zone: Set[Pos] = set()
+        for m in mobs:
+            zone.add(m.pos)
+            if dist >= 1:
+                for nb in neighbors4(m.pos):
+                    if inside(nb, w, h):
+                        zone.add(nb)
+        return zone
+
+    # --------------------- panic ---------------------
+
+    def _panic_step(
+            self,
+            unit: Bomber,
+            blocked: Set[Pos],
+            min_explosion: Dict[Pos, float],
+            mobs: List[Mob],
+            w: int,
+            h: int,
+    ) -> Optional[Pos]:
+        # выбираем соседнюю клетку с максимальной дистанцией до ближайшего моба и безопасную по бомбам
+        mob_pos = [m.pos for m in mobs]
+        best: Optional[Pos] = None
+        best_sc = float("-inf")
+
+        for nb in neighbors4(unit.pos):
+            if not inside(nb, w, h):
+                continue
+            if nb in blocked:
+                continue
+            if not self._safe_to_stay(nb, leave_time=2.0, min_explosion=min_explosion):
+                continue
+            d = min((manhattan(nb, mp) for mp in mob_pos), default=10)
+            back = 1000 if (self._prev_pos is not None and nb == self._prev_pos) else 0
+            sc = d * 10 - back
+            if sc > best_sc:
+                best_sc = sc
+                best = nb
+
+        return best
+
+    # --------------------- BFS time-aware ---------------------
+
+    def _time_bfs_first(
             self,
             start: Pos,
             start_time: int,
-            blocked: set[Pos],
+            blocked: Set[Pos],
             min_explosion: Dict[Pos, float],
             w: int,
             h: int,
-            goal_pred: Callable[[Pos, int], bool],
             max_time: int,
+            goal_pred: Callable[[Pos, int], bool],
     ) -> Optional[List[Pos]]:
-        """
-        BFS по (pos, t) с учётом таймеров бомб.
-        Состояние (pos, t) означает: мы на pos в момент t.
-        Требование выживания: мы должны пережить интервал до t+1 -> safe_to_stay(pos, leave_time=t+1).
-        """
-        # если уже в хорошем месте — можно вообще не двигаться
-        if goal_pred(start, start_time) and self._safe_to_stay(start, leave_time=float(start_time + 1), min_explosion=min_explosion):
-            return []
-
         q = deque([(start, start_time)])
         prev: Dict[Tuple[Pos, int], Tuple[Pos, int]] = {}
         seen = {(start, start_time)}
 
+        def ok(p: Pos, t: int) -> bool:
+            return self._safe_to_stay(p, leave_time=float(t + 1), min_explosion=min_explosion)
+
         while q:
-            pos, t = q.popleft()
-            if t >= start_time + max_time:
+            cur, t = q.popleft()
+            if t > start_time + max_time:
                 continue
 
-            # должны выжить до следующей секунды
-            if not self._safe_to_stay(pos, leave_time=float(t + 1), min_explosion=min_explosion):
-                continue
+            if t > start_time and goal_pred(cur, t):
+                return self._reconstruct(prev, (cur, t), start, start_time)
 
-            for nb in neighbors4(pos):
+            for nx in neighbors4(cur):
                 nt = t + 1
+                if nt > start_time + max_time:
+                    continue
+                if not inside(nx, w, h):
+                    continue
+                if nx in blocked:
+                    continue
+                if not ok(nx, nt):
+                    continue
+                key = (nx, nt)
+                if key in seen:
+                    continue
+                seen.add(key)
+                prev[key] = (cur, t)
+                q.append((nx, nt))
+
+        return None
+
+    def _reconstruct(
+            self,
+            prev: Dict[Tuple[Pos, int], Tuple[Pos, int]],
+            end: Tuple[Pos, int],
+            start: Pos,
+            start_time: int,
+    ) -> List[Pos]:
+        cur = end
+        out: List[Pos] = []
+        while cur != (start, start_time):
+            out.append(cur[0])
+            cur = prev[cur]
+        out.reverse()
+        return out
+
+    def _bfs(self, start: Pos, goals: Set[Pos], blocked: Set[Pos], w: int, h: int) -> Optional[List[Pos]]:
+        if not goals:
+            return None
+        q = deque([start])
+        prev: Dict[Pos, Pos] = {}
+        seen = {start}
+
+        while q:
+            cur = q.popleft()
+            if cur in goals and cur != start:
+                path_rev = [cur]
+                while path_rev[-1] != start:
+                    path_rev.append(prev[path_rev[-1]])
+                path = list(reversed(path_rev))
+                return path[1:]
+
+            for nb in neighbors4(cur):
                 if not inside(nb, w, h):
                     continue
                 if nb in blocked:
                     continue
-
-                state = (nb, nt)
-                if state in seen:
+                if nb in seen:
                     continue
-
-                # оказавшись в nb в момент nt, мы должны прожить до nt+1
-                if not self._safe_to_stay(nb, leave_time=float(nt + 1), min_explosion=min_explosion):
-                    continue
-
-                seen.add(state)
-                prev[state] = (pos, t)
-
-                if goal_pred(nb, nt):
-                    # восстановление пути: список клеток, в которые мы последовательно заходим
-                    path_rev = [state]
-                    while path_rev[-1] != (start, start_time):
-                        path_rev.append(prev[path_rev[-1]])
-                    path_rev.reverse()
-
-                    # path_rev содержит состояния, берем позиции кроме стартовой
-                    steps = [p for (p, _t) in path_rev][1:]
-                    return steps[: self.cfg.max_plan_len]
-
-                q.append(state)
-
+                seen.add(nb)
+                prev[nb] = cur
+                q.append(nb)
         return None
+
+    # --------------------- misc ---------------------
+
+    def _anti_pingpong(self, cur: Pos, step: Pos, blocked: Set[Pos], min_explosion: Dict[Pos, float], w: int, h: int) -> Pos:
+        if self._prev_pos is None or step != self._prev_pos:
+            return step
+        # если пытаемся сделать шаг назад — берём лучший альтернативный
+        alts: List[Pos] = []
+        for nb in neighbors4(cur):
+            if not inside(nb, w, h):
+                continue
+            if nb in blocked:
+                continue
+            if nb == self._prev_pos:
+                continue
+            if not self._safe_to_stay(nb, leave_time=2.0, min_explosion=min_explosion):
+                continue
+            alts.append(nb)
+        if not alts:
+            return step
+        # просто берём первый (можно усложнить скоринг)
+        return alts[0]
+
+    def _is_step_valid(self, cur: Pos, step: Pos, blocked: Set[Pos], min_explosion: Dict[Pos, float], w: int, h: int) -> bool:
+        return (
+                inside(step, w, h)
+                and step not in blocked
+                and manhattan(cur, step) == 1
+                and self._safe_to_stay(step, leave_time=2.0, min_explosion=min_explosion)
+        )

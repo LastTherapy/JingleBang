@@ -16,7 +16,6 @@ from app.state_cache import StateCache
 from infra.bot_runner import BotRunner, BotControl
 from infra.webapp import create_app
 from strategies.SafeBombStrategy import SafeBombStrategy
-# from strategies.farm_obstacles import FarmObstaclesStrategy
 from strategies.idle import IdleStrategy
 
 
@@ -48,19 +47,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
 
-    # ===== registry (плагины стратегий) =====
     registry = StrategyRegistry(
         _factories={
             "idle": lambda: IdleStrategy(),
-            "farm_obstacles": lambda: SafeBombStrategy(),
+            "safe_bomb": lambda: SafeBombStrategy(),
         },
         _descriptions={
             "idle": "do nothing",
-            "farm_obstacles": "go to nearest obstacle -> bomb -> escape",
+            "safe_bomb": "bomb only if safe + destroys obstacles; otherwise explore spread",
         },
     )
 
-    assignments = AssignmentStore(path=Path(args.assignments), default_strategy="farm_obstacles")
+    assignments = AssignmentStore(path=Path(args.assignments), default_strategy="safe_bomb")
     cache = StateCache()
     control = BotControl(paused=False, loop_delay=args.loop_delay)
 
