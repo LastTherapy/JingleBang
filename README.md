@@ -1,14 +1,11 @@
-# JingleBang
+# Bot + GUI
 
-Простой бот для участия в DatsJingleBang.
+Run:
 
-## Быстрый старт
-1. Установите зависимости: `python3 -m venv .venv && source .venv/bin/activate && pip install -e .`
-2. Запустите бота: `python3 main.py`  
-   Параметры можно посмотреть через `python3 main.py --help` (token можно передать через `--token` или переменную окружения `DATS_TOKEN`).
+```bash
+pip install -U fastapi uvicorn requests
+python main.py --gui-host 0.0.0.0 --gui-port 8000
+```
 
-## Архитектура
-- `client.py` — HTTP клиент с ограничением по RPS и сохранением последних запросов/ответов.
-- `model.py` — датаклассы ответа /move и /arena.
-- `strategy.py` — навигация по карте и простая жадная стратегия (поиск ближайших препятствий, постановка бомб, уход из опасных зон).
-- `main.py` — цикл опроса арены и отправки команд.
+Open http://127.0.0.1:8000 in a browser.
+

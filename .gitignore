@@ -1,2 +1,4 @@
 poetry.lock
 venv
+.venv
+.idea
