@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bomberman+ Live Arena</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #00ff00;
+            padding-bottom: 10px;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            text-shadow: 0 0 10px #00ff00;
+            margin-bottom: 5px;
+        }
+        
+        .status {
+            font-size: 12px;
+            color: #ffff00;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .canvas-wrapper {
+            background: #1a1a1a;
+            border: 3px solid #00ff00;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+            padding: 10px;
+        }
+        
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            width: 100%;
+            height: auto;
+            background: #000;
+        }
+        
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .panel {
+            background: #1a1a1a;
+            border: 1px solid #00ff00;
+            padding: 12px;
+            border-radius: 3px;
+            font-size: 11px;
+        }
+        
+        .panel-title {
+            color: #ffff00;
+            font-weight: bold;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #00ff00;
+            padding-bottom: 5px;
+        }
+        
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 3px 0;
+            padding: 2px 0;
+        }
+        
+        .stat-label {
+            color: #00ff00;
+        }
+        
+        .stat-value {
+            color: #ffff00;
+            font-weight: bold;
+        }
+        
+        .legend {
+            display: grid;
+            grid-template-columns: 20px 1fr;
+            gap: 8px;
+            align-items: center;
+            margin: 3px 0;
+            font-size: 10px;
+        }
+        
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 2px;
+        }
+        
+        .color-player { background: #3366ff; }
+        .color-enemy { background: #ff3333; }
+        .color-mob { background: #cc33cc; }
+        .color-wall { background: #666666; }
+        .color-obstacle { background: #996644; }
+        .color-bomb { background: #ffff00; }
+        .color-explosion { background: #ff8800; }
+        
+        .log {
+            background: #0a0a0a;
+            border: 1px solid #00ff00;
+            padding: 10px;
+            border-radius: 3px;
+            font-size: 9px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .log-entry {
+            margin: 2px 0;
+            padding: 2px;
+            border-bottom: 1px dotted #333;
+        }
+        
+        .log-info { color: #00ff00; }
+        .log-warn { color: #ffff00; }
+        .log-error { color: #ff0000; }
+        
+        @media (max-width: 1024px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚔️ BOMBERMAN+ LIVE ARENA</h1>
+        <div class="status">
+            <span id="status-text">Loading...</span> | 
+            Last update: <span id="last-update">--:--:--</span>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="canvas-wrapper">
+            <canvas id="gameCanvas" width="800" height="800"></canvas>
+        </div>
+        
+        <div class="sidebar">
+            <div class="panel">
+                <div class="panel-title">ARENA INFO</div>
+                <div class="stat-row">
+                    <span class="stat-label">Map Size:</span>
+                    <span class="stat-value" id="map-size">--×--</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Units:</span>
+                    <span class="stat-value" id="unit-count">0/6</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Enemies:</span>
+                    <span class="stat-value" id="enemy-count">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Obstacles:</span>
+                    <span class="stat-value" id="obstacle-count">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Bombs:</span>
+                    <span class="stat-value" id="bomb-count">0</span>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <div class="panel-title">UNIT STATUS</div>
+                <div id="unit-list"></div>
+            </div>
+            
+            <div class="panel">
+                <div class="panel-title">LEGEND</div>
+                <div class="legend">
+                    <div class="legend-color color-player"></div>
+                    <span>Player Units</span>
+                </div>
+                <div class="legend">
+                    <div class="legend-color color-enemy"></div>
+                    <span>Enemy Units</span>
+                </div>
+                <div class="legend">
+                    <div class="legend-color color-mob"></div>
+                    <span>Mobs</span>
+                </div>
+                <div class="legend">
+                    <div class="legend-color color-wall"></div>
+                    <span>Walls</span>
+                </div>
+                <div class="legend">
+                    <div class="legend-color color-obstacle"></div>
+                    <span>Obstacles</span>
+                </div>
+                <div class="legend">
+                    <div class="legend-color color-bomb"></div>
+                    <span>Bombs</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        let currentState = null;
+        
+        // Color scheme
+        const COLORS = {
+            background: '#0a0a0a',
+            wall: '#666666',
+            obstacle: '#996644',
+            player: '#3366ff',
+            enemy: '#ff3333',
+            mob: '#cc33cc',
+            bomb: '#ffff00',
+            explosion: '#ff8800'
+        };
+        
+        // Fetch state and render
+        async function updateGame() {
+            try {
+                const response = await fetch('/api/state');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                currentState = data.state;
+                
+                // Update UI
+                document.getElementById('status-text').textContent = 'CONNECTED';
+                document.getElementById('status-text').style.color = '#00ff00';
+                document.getElementById('last-update').textContent = 
+                    new Date(data.timestamp).toLocaleTimeString();
+                
+                // Render
+                render();
+                updateStats();
+            } catch (error) {
+                document.getElementById('status-text').textContent = 'ERROR: ' + error.message;
+                document.getElementById('status-text').style.color = '#ff0000';
+            }
+        }
+        
+        function render() {
+            if (!currentState) return;
+            
+            const mapSize = currentState.map_size;
+            const w = mapSize[0];
+            const h = mapSize[1];
+            
+            // Clear
+            ctx.fillStyle = COLORS.background;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            const tileW = canvas.width / w;
+            const tileH = canvas.height / h;
+            
+            const arena = currentState.arena || {};
+            
+            // Draw walls
+            ctx.fillStyle = COLORS.wall;
+            for (const [x, y] of arena.walls || []) {
+                ctx.fillRect(x * tileW, y * tileH, tileW, tileH);
+            }
+            
+            // Draw obstacles
+            ctx.fillStyle = COLORS.obstacle;
+            for (const [x, y] of arena.obstacles || []) {
+                ctx.fillRect(x * tileW, y * tileH, tileW, tileH);
+            }
+            
+            // Draw bombs
+            ctx.fillStyle = COLORS.bomb;
+            for (const bomb of arena.bombs || []) {
+                const [x, y] = bomb.pos ? bomb.pos : bomb;
+                ctx.fillRect(x * tileW, y * tileH, tileW, tileH);
+            }
+            
+            // Draw player units
+            ctx.fillStyle = COLORS.player;
+            for (const unit of currentState.bombers || []) {
+                if (!unit.alive) continue;
+                const [x, y] = unit.pos;
+                ctx.fillRect(x * tileW, y * tileH, tileW, tileH);
+                
+                // Label
+                ctx.fillStyle = '#fff';
+                ctx.font = `${Math.max(8, tileW/2)}px monospace`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('P', x * tileW + tileW/2, y * tileH + tileH/2);
+                ctx.fillStyle = COLORS.player;
+            }
+            
+            // Draw enemies
+            ctx.fillStyle = COLORS.enemy;
+            for (const enemy of currentState.enemies || []) {
+                const [x, y] = enemy.pos;
+                ctx.fillRect(x * tileW, y * tileH, tileW, tileH);
+            }
+            
+            // Draw mobs
+            ctx.fillStyle = COLORS.mob;
+            for (const mob of currentState.mobs || []) {
+                const [x, y] = mob.pos;
+                ctx.fillRect(x * tileW, y * tileH, tileW, tileH);
+            }
+        }
+        
+        function updateStats() {
+            if (!currentState) return;
+            
+            const mapSize = currentState.map_size;
+            document.getElementById('map-size').textContent = 
+                `${mapSize[0]}×${mapSize[1]}`;
+            
+            const alive = currentState.bombers.filter(b => b.alive).length;
+            document.getElementById('unit-count').textContent = 
+                `${alive}/${currentState.bombers.length}`;
+            
+            document.getElementById('enemy-count').textContent = 
+                currentState.enemies.length;
+            
+            const arena = currentState.arena || {};
+            document.getElementById('obstacle-count').textContent = 
+                (arena.obstacles || []).length;
+            
+            document.getElementById('bomb-count').textContent = 
+                (arena.bombs || []).length;
+            
+            // Unit list
+            const unitList = document.getElementById('unit-list');
+            unitList.innerHTML = '';
+            for (let i = 0; i < currentState.bombers.length; i++) {
+                const unit = currentState.bombers[i];
+                if (!unit.alive) continue;
+                
+                const div = document.createElement('div');
+                div.className = 'stat-row';
+                div.innerHTML = `
+                    <span class="stat-label">Unit ${i+1}:</span>
+                    <span class="stat-value">${unit.armor}❤️ ${unit.bombs_available}💣</span>
+                `;
+                unitList.appendChild(div);
+            }
+        }
+        
+        // Poll every 2 seconds
+        setInterval(updateGame, 2000);
+        updateGame(); // Initial load
+    </script>
+</body>
+</html>

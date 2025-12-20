@@ -1,7 +1,0 @@
-poetry.lock
-venv
-**/__pycache__
-__pycache__
-**/dump
-dump
-/__pycache__
