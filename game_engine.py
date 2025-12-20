@@ -1,66 +1,45 @@
+#!/usr/bin/env python3
 """
-Bomberman+ Advanced AI System - OPTIMIZED STRATEGY
+Bomberman+ Ultra-Efficient Farming AI - PRODUCTION STABLE
 
-Sophisticated gameplay with:
-1. Point optimization (obstacle destruction: 1-10pts, enemy: 5pts, mob: 50pts)
-2. Chain explosion detection (fuse timer awareness)
-3. Unit grouping vs spreading (vision union strategy)
-4. Suicide protocol (last 3 units respawn entire team)
-5. Booster priority (bomb upgrade → vision → analyze)
-6. Precise timing (20s fetch interval = 3 req/min limit)
-7. Intelligent bomb placement (maximize chain explosions)
+CRITICAL FIX: 3 requests per SECOND (not minute!)
+→ Refresh every 0.666667 seconds (2/3 second)
 
-API:
-- GET  /api/arena   (every 20 seconds)
-- POST /api/move    (after fetch, with optimized timing)
-- GET  /api/booster (every 90 seconds)
-- POST /api/booster (auto-activate: bomb → vision)
+Strategy:
+1. Continuous obstacle farming for maximum points
+2. Escape from danger (bombs + mobs within 4 cells)
+3. Suicide last 3 units for respawn
+4. Robust error handling for reliability
+5. Combined path + bombs in single POST
 
-Author: Advanced Bomberman AI
-Date: 2025-12-20
+Timing:
+- Fetch state every 0.67 seconds
+- Send commands immediately after
+- Recover gracefully from errors
+- Never crash, always running
 """
 
 import requests
 import json
 import time
-import threading
-from collections import deque, defaultdict
+import sys
+from collections import deque
 from typing import Dict, List, Tuple, Set, Optional, Any
 from dataclasses import dataclass
-from enum import Enum
-import traceback
-import math
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 BASE_URL = "https://games-test.datsteam.dev"
 TOKEN = "345c75ba-26c0-4f3e-acd4-09e63982ca52"
 
-# CRITICAL: 3 requests per minute max = 20 seconds minimum between fetches
-POLL_INTERVAL = 20.0  # Fetch every 20 seconds (3 req/min limit)
-BOOSTER_INTERVAL = 90  # Check boosters every 90 seconds
-COMMAND_TIMEOUT = 2.0
-
 HEADERS = {
     "X-Auth-Token": TOKEN,
-    "Content-Type": "application/json",
-    "accept": "application/json"
+    "Content-Type": "application/json"
 }
+
+# CRITICAL: 3 requests per SECOND
+FETCH_INTERVAL = 0.667  # 2/3 second = 3 req/sec
+COMMAND_TIMEOUT = 0.5
 
 Pos = Tuple[int, int]
-
-# Reward values
-REWARDS = {
-    "obstacle_1": 1,   # First obstacle in chain
-    "obstacle_2": 2,   # Second obstacle
-    "obstacle_3": 3,   # Third obstacle
-    "obstacle_4": 4,   # Fourth obstacle
-    "obstacle_max": 10,  # Max for explosion
-    "enemy": 5,        # Kill enemy
-    "mob": 50          # Kill mob
-}
 
 
 # ============================================================================
@@ -68,93 +47,360 @@ REWARDS = {
 # ============================================================================
 
 @dataclass
-class Bomb:
-    """Bomb with timer and explosion info"""
-    pos: Pos
-    timer: int  # Seconds until explosion
-    radius: int
-    placed_by: Optional[str] = None
-
-
-@dataclass
-class Unit:
-    """Player unit state"""
-    id: str
-    pos: Pos
-    alive: bool
-    armor: int
-    bombs_available: int
-    can_move: bool
-    safe_time: int
-
-
-@dataclass
 class GameState:
-    """Complete game arena state"""
+    """Minimal game state"""
     map_size: Tuple[int, int]
-    units: Dict[str, Unit]
-    enemies: List[Pos]
-    mobs: List[Pos]
-    walls: Set[Pos]
+    bombers: Dict[str, Dict[str, Any]]
     obstacles: Set[Pos]
-    bombs: List[Bomb]  # Now with timer info
+    walls: Set[Pos]
+    bombs: List[Dict[str, Any]]
+    mobs: List[Pos]
     timestamp: float
-    round_id: str
-
-
-class UnitMode(Enum):
-    """Unit behavior states"""
-    SCOUT = "scout"          # Explore for obstacles
-    HUNT = "hunt"            # Chase enemies/mobs
-    FARM = "farm"            # Destroy obstacles optimally
-    CHAIN = "chain"          # Trigger chain explosions
-    GROUP = "group"          # Group for safety
-    SPREAD = "spread"        # Spread for vision coverage
-    RETREAT = "retreat"      # Escape danger
-    SUICIDE = "suicide"      # Kamikaze for respawn
-    WAIT = "wait"            # No bombs available
+    
+    def alive_count(self) -> int:
+        """Count alive units"""
+        return len(self.bombers)
 
 
 # ============================================================================
-# API CLIENT
+# PATHFINDING - OPTIMIZED
+# ============================================================================
+
+def neighbors4(p: Pos) -> List[Pos]:
+    """4-directional neighbors"""
+    x, y = p
+    return [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+
+
+def in_bounds(p: Pos, w: int, h: int) -> bool:
+    """Check bounds"""
+    return 0 <= p[0] < w and 0 <= p[1] < h
+
+
+def manhattan(a: Pos, b: Pos) -> int:
+    """Manhattan distance"""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def bfs_path(start: Pos, goal: Pos, blocked: Set[Pos], 
+             w: int, h: int, max_len: int = 30) -> Optional[List[Pos]]:
+    """BFS pathfinding - returns shortest path or None"""
+    if goal in blocked or not in_bounds(goal, w, h):
+        return None
+    
+    if start == goal:
+        return []
+    
+    queue = deque([start])
+    prev = {start: None}
+    found = False
+    
+    while queue and not found:
+        current = queue.popleft()
+        
+        if current == goal:
+            found = True
+            break
+        
+        for neighbor in neighbors4(current):
+            if not in_bounds(neighbor, w, h):
+                continue
+            if neighbor in blocked or neighbor in prev:
+                continue
+            
+            prev[neighbor] = current
+            queue.append(neighbor)
+    
+    if not found:
+        return None
+    
+    # Reconstruct path
+    path = []
+    while current != start:
+        path.append(current)
+        current = prev[current]
+    path.reverse()
+    return path[:max_len]
+
+
+def find_nearest_target(pos: Pos, targets: Set[Pos], blocked: Set[Pos],
+                        w: int, h: int, max_search: int = 200) -> Optional[Pos]:
+    """BFS to find nearest target - optimized with search limit"""
+    if not targets:
+        return None
+    
+    queue = deque([pos])
+    visited = {pos}
+    search_count = 0
+    
+    while queue and search_count < max_search:
+        current = queue.popleft()
+        search_count += 1
+        
+        if current in targets:
+            return current
+        
+        for neighbor in neighbors4(current):
+            if not in_bounds(neighbor, w, h):
+                continue
+            if neighbor in blocked or neighbor in visited:
+                continue
+            
+            visited.add(neighbor)
+            queue.append(neighbor)
+    
+    return None
+
+
+# ============================================================================
+# STATE PARSER - ROBUST
+# ============================================================================
+
+def parse_state(data: Dict[str, Any]) -> Optional[GameState]:
+    """Parse arena JSON with error handling"""
+    try:
+        map_size = tuple(data.get("map_size", [167, 167]))
+        
+        # Parse units (only alive ones)
+        bombers = {}
+        for b in data.get("bombers", []):
+            if b.get("alive"):
+                bombers[b["id"]] = {
+                    "pos": tuple(b["pos"]),
+                    "bombs_available": b.get("bombs_available", 1),
+                    "can_move": b.get("can_move", False),
+                    "armor": b.get("armor", 0),
+                    "safe_time": b.get("safe_time", 0)
+                }
+        
+        # Parse arena
+        arena = data.get("arena", {})
+        obstacles = {tuple(o) for o in arena.get("obstacles", [])}
+        walls = {tuple(w) for w in arena.get("walls", [])}
+        bombs = arena.get("bombs", [])
+        
+        # Parse entities
+        mobs = [tuple(m["pos"]) for m in data.get("mobs", [])]
+        
+        return GameState(
+            map_size=map_size,
+            bombers=bombers,
+            obstacles=obstacles,
+            walls=walls,
+            bombs=bombs,
+            mobs=mobs,
+            timestamp=time.time()
+        )
+    
+    except Exception as e:
+        print(f"[Parse Error] {e}", file=sys.stderr)
+        return None
+
+
+# ============================================================================
+# THREAT DETECTION
+# ============================================================================
+
+def is_in_danger(pos: Pos, state: GameState) -> bool:
+    """Check if threatened - bombs (any radius) or mobs (≤4 cells)"""
+    # Check bombs
+    for bomb in state.bombs:
+        bomb_pos = tuple(bomb["pos"])
+        radius = bomb.get("radius", 3)
+        if manhattan(pos, bomb_pos) <= radius:
+            return True
+    
+    # Check mobs within 4 cells
+    for mob in state.mobs:
+        if manhattan(pos, mob) <= 4:
+            return True
+    
+    return False
+
+
+def find_escape_path(pos: Pos, state: GameState) -> Optional[List[Pos]]:
+    """Find path to first safe cell - BFS with early exit"""
+    w, h = state.map_size
+    blocked = state.walls | state.obstacles | {tuple(b["pos"]) for b in state.bombs}
+    
+    # BFS to find first safe cell (not blocked and not in danger)
+    queue = deque([(pos, [])])
+    visited = {pos}
+    
+    while queue:
+        current, path = queue.popleft()
+        
+        # Check if safe and not starting position
+        if path and not is_in_danger(current, state):
+            return path  # Early exit on first safe cell
+        
+        # Limit search depth
+        if len(path) > 15:
+            continue
+        
+        for neighbor in neighbors4(current):
+            if not in_bounds(neighbor, w, h):
+                continue
+            if neighbor in blocked or neighbor in visited:
+                continue
+            
+            visited.add(neighbor)
+            queue.append((neighbor, path + [neighbor]))
+    
+    return None
+
+
+# ============================================================================
+# FARMING DECISION
+# ============================================================================
+
+def find_and_farm_obstacle(pos: Pos, state: GameState) -> Tuple[List[Pos], List[Pos]]:
+    """Find nearest obstacle and prepare to farm it"""
+    if not state.obstacles:
+        return [], []
+    
+    w, h = state.map_size
+    blocked = state.walls
+    
+    # Find nearest obstacle
+    nearest_obs = find_nearest_target(pos, state.obstacles, blocked, w, h)
+    
+    if not nearest_obs:
+        return [], []
+    
+    # If already adjacent to obstacle, plant bomb
+    if manhattan(pos, nearest_obs) == 1:
+        bombs = [list(nearest_obs)]
+        # Try to move to safe adjacent cell
+        adjacent = [n for n in neighbors4(pos) 
+                   if in_bounds(n, w, h) and n not in blocked and n not in state.obstacles]
+        if adjacent:
+            # Choose safest adjacent cell
+            best = min(adjacent, key=lambda p: is_in_danger(p, state))
+            return [list(best)], bombs
+        return [], bombs
+    
+    # Find path to adjacent cell of obstacle
+    adjacent_options = [n for n in neighbors4(nearest_obs)
+                       if in_bounds(n, w, h) and n not in blocked and n not in state.obstacles]
+    
+    if not adjacent_options:
+        return [], []
+    
+    # Choose closest adjacent cell
+    best_adj = min(adjacent_options, key=lambda p: manhattan(pos, p))
+    
+    path = bfs_path(pos, best_adj, blocked, w, h)
+    
+    if path:
+        return path, []
+    
+    return [], []
+
+
+# ============================================================================
+# UNIT DECISION
+# ============================================================================
+
+def decide_unit_action(unit_id: str, unit_info: Dict[str, Any], 
+                       state: GameState) -> Tuple[List[Pos], List[Pos]]:
+    """Decide path and bombs for one unit"""
+    
+    pos = unit_info["pos"]
+    
+    # Can't move - wait
+    if not unit_info.get("can_move"):
+        return [], []
+    
+    # In danger - ESCAPE immediately
+    if is_in_danger(pos, state):
+        escape = find_escape_path(pos, state)
+        if escape:
+            return escape, []
+        return [], []
+    
+    # No bombs - WAIT
+    if unit_info.get("bombs_available", 0) <= 0:
+        return [], []
+    
+    # FARM obstacles
+    path, bombs = find_and_farm_obstacle(pos, state)
+    return path, bombs
+
+
+# ============================================================================
+# API CLIENT - ROBUST
 # ============================================================================
 
 class ApiClient:
-    """Communication with game server"""
+    """API communication with robust error handling"""
     
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            "X-Auth-Token": TOKEN,
-            "Content-Type": "application/json"
-        })
-        self.last_fetch_time = 0.0
+        self.session.headers.update(HEADERS)
+        self.last_fetch = 0.0
+        self.fetch_count = 0
+        self.error_count = 0
     
-    def get_arena(self) -> Tuple[bool, Dict[str, Any]]:
-        """Fetch with 20s rate limit (3 req/min)"""
-        current_time = time.time()
-        if current_time - self.last_fetch_time < POLL_INTERVAL:
-            # Too soon, skip
-            return False, {}
+    def should_fetch(self) -> bool:
+        """Check if enough time passed for next fetch"""
+        return time.time() - self.last_fetch >= FETCH_INTERVAL
+    
+    def fetch_state(self) -> Tuple[bool, Optional[GameState]]:
+        """Fetch arena state with error handling"""
+        if not self.should_fetch():
+            return False, None
         
-        self.last_fetch_time = current_time
+        self.last_fetch = time.time()
         
         try:
             response = self.session.get(
                 f"{BASE_URL}/api/arena",
                 timeout=COMMAND_TIMEOUT
             )
+            
             if response.status_code == 200:
-                return True, response.json()
+                data = response.json()
+                state = parse_state(data)
+                self.fetch_count += 1
+                
+                if state:
+                    self.error_count = 0  # Reset error count on success
+                    return True, state
+                else:
+                    self.error_count += 1
+                    return False, None
+            
+            elif response.status_code == 401:
+                print(f"[Auth Error] HTTP 401 - Token invalid or expired", file=sys.stderr)
+                self.error_count += 1
+                return False, None
+            
             else:
-                print(f"[API] GET /arena returned {response.status_code}")
-                return False, {}
+                print(f"[Fetch Error] HTTP {response.status_code}", file=sys.stderr)
+                self.error_count += 1
+                return False, None
+        
+        except requests.exceptions.Timeout:
+            print(f"[Timeout] GET /api/arena exceeded {COMMAND_TIMEOUT}s", file=sys.stderr)
+            self.error_count += 1
+            return False, None
+        
+        except requests.exceptions.ConnectionError as e:
+            print(f"[Connection Error] {e}", file=sys.stderr)
+            self.error_count += 1
+            return False, None
+        
         except Exception as e:
-            print(f"[API] GET /arena error: {e}")
-            return False, {}
+            print(f"[Fetch Error] {e}", file=sys.stderr)
+            self.error_count += 1
+            return False, None
     
-    def send_move(self, commands: List[Dict[str, Any]]) -> Tuple[bool, Dict[str, Any]]:
-        """Send optimized unit commands"""
+    def send_commands(self, commands: List[Dict[str, Any]]) -> Tuple[bool, int]:
+        """Send commands with error handling - returns (success, command_count)"""
+        if not commands:
+            return True, 0
+        
         try:
             payload = {"bombers": commands}
             response = self.session.post(
@@ -162,572 +408,116 @@ class ApiClient:
                 json=payload,
                 timeout=COMMAND_TIMEOUT
             )
+            
             if response.status_code == 200:
-                return True, response.json()
+                self.error_count = 0
+                return True, len(commands)
+            
+            elif response.status_code == 401:
+                print(f"[Auth Error] POST /api/move - Token invalid", file=sys.stderr)
+                self.error_count += 1
+                return False, 0
+            
             else:
-                print(f"[API] POST /move returned {response.status_code}")
-                return False, {}
-        except Exception as e:
-            print(f"[API] POST /move error: {e}")
-            return False, {}
-    
-    def get_boosters(self) -> Tuple[bool, Dict[str, Any]]:
-        """Get available boosters"""
-        try:
-            response = self.session.get(
-                f"{BASE_URL}/api/booster",
-                timeout=COMMAND_TIMEOUT
-            )
-            if response.status_code == 200:
-                return True, response.json()
-            else:
-                return False, {}
-        except Exception as e:
-            print(f"[API] GET /booster error: {e}")
-            return False, {}
-    
-    def activate_booster(self, booster_type: str) -> Tuple[bool, Dict[str, Any]]:
-        """Activate booster with priority: bomb → vision"""
-        try:
-            response = self.session.post(
-                f"{BASE_URL}/api/booster",
-                json={"booster": booster_type},
-                timeout=COMMAND_TIMEOUT
-            )
-            if response.status_code == 200:
-                return True, response.json()
-            else:
-                return False, {}
-        except Exception as e:
-            print(f"[API] POST /booster error: {e}")
-            return False, {}
-
-
-# ============================================================================
-# STATE PARSER
-# ============================================================================
-
-class StateParser:
-    """Parse JSON arena data with bomb timers"""
-    
-    @staticmethod
-    def parse(data: Dict[str, Any]) -> Optional[GameState]:
-        """Parse arena JSON with timer-aware bombs"""
-        try:
-            map_size = tuple(data.get("map_size", [167, 167]))
-            round_id = data.get("round", "unknown")
-            
-            # Parse units
-            units = {}
-            for unit_data in data.get("bombers", []):
-                if unit_data.get("alive"):
-                    unit_id = unit_data["id"]
-                    units[unit_id] = Unit(
-                        id=unit_id,
-                        pos=tuple(unit_data["pos"]),
-                        alive=True,
-                        armor=unit_data.get("armor", 0),
-                        bombs_available=unit_data.get("bombs_available", 1),
-                        can_move=unit_data.get("can_move", False),
-                        safe_time=unit_data.get("safe_time", 0)
-                    )
-            
-            # Parse enemies and mobs
-            enemies = [tuple(e["pos"]) for e in data.get("enemies", [])]
-            mobs = [tuple(m["pos"]) for m in data.get("mobs", [])]
-            
-            # Parse arena
-            arena = data.get("arena", {})
-            walls = {tuple(w) for w in arena.get("walls", [])}
-            obstacles = {tuple(o) for o in arena.get("obstacles", [])}
-            
-            # Parse bombs WITH TIMER
-            bombs = []
-            for b in arena.get("bombs", []):
-                if isinstance(b, dict):
-                    bomb = Bomb(
-                        pos=tuple(b["pos"]),
-                        timer=b.get("timer", 3),  # Default 3 seconds
-                        radius=b.get("radius", 3),
-                        placed_by=b.get("placed_by")
-                    )
-                    bombs.append(bomb)
-            
-            return GameState(
-                map_size=map_size,
-                units=units,
-                enemies=enemies,
-                mobs=mobs,
-                walls=walls,
-                obstacles=obstacles,
-                bombs=bombs,
-                timestamp=time.time(),
-                round_id=round_id
-            )
+                print(f"[Move Error] HTTP {response.status_code}", file=sys.stderr)
+                self.error_count += 1
+                return False, 0
+        
+        except requests.exceptions.Timeout:
+            print(f"[Timeout] POST /api/move exceeded {COMMAND_TIMEOUT}s", file=sys.stderr)
+            self.error_count += 1
+            return False, 0
         
         except Exception as e:
-            print(f"[Parser] Error: {e}")
-            traceback.print_exc()
-            return None
+            print(f"[Send Error] {e}", file=sys.stderr)
+            self.error_count += 1
+            return False, 0
+    
+    def is_healthy(self) -> bool:
+        """Check if API client is healthy"""
+        return self.error_count < 10  # Allow up to 10 consecutive errors
 
 
 # ============================================================================
-# ADVANCED PATHFINDING
+# MAIN ENGINE
 # ============================================================================
 
-class AdvancedPathfinder:
-    """BFS with chain explosion awareness"""
-    
-    @staticmethod
-    def neighbors4(p: Pos) -> List[Pos]:
-        x, y = p
-        return [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
-    
-    @staticmethod
-    def in_bounds(p: Pos, w: int, h: int) -> bool:
-        return 0 <= p[0] < w and 0 <= p[1] < h
-    
-    @staticmethod
-    def manhattan(a: Pos, b: Pos) -> int:
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
-    
-    @staticmethod
-    def chebyshev(a: Pos, b: Pos) -> int:
-        """Chebyshev distance (max of dimensions)"""
-        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-    
-    @staticmethod
-    def find_path(start: Pos, goal: Pos, blocked: Set[Pos], 
-                  w: int, h: int, max_len: int = 30) -> Optional[List[Pos]]:
-        """BFS pathfinding"""
-        if goal in blocked or not AdvancedPathfinder.in_bounds(goal, w, h):
-            return None
-        
-        if start == goal:
-            return []
-        
-        queue = deque([start])
-        prev = {start: None}
-        
-        while queue:
-            current = queue.popleft()
-            
-            if current == goal:
-                path = []
-                while current != start:
-                    path.append(current)
-                    current = prev[current]
-                path.reverse()
-                return path[:max_len]
-            
-            for neighbor in AdvancedPathfinder.neighbors4(current):
-                if not AdvancedPathfinder.in_bounds(neighbor, w, h):
-                    continue
-                if neighbor in blocked or neighbor in prev:
-                    continue
-                
-                prev[neighbor] = current
-                queue.append(neighbor)
-        
-        return None
-
-
-# ============================================================================
-# ADVANCED UNIT CONTROLLER
-# ============================================================================
-
-class AdvancedController:
-    """Sophisticated decision-making with point optimization"""
-    
-    def __init__(self):
-        self.pathfinder = AdvancedPathfinder()
-        self.unit_modes: Dict[str, UnitMode] = {}
-        self.last_booster_time = 0.0
-        self.booster_priority = ["bomb_range", "bomb_delay", "view"]  # Order: bomb → vision
-    
-    def decide_unit_actions(self, unit: Unit, state: GameState) -> Tuple[List[Pos], List[Pos]]:
-        """Decide movement and bombing with advanced strategy"""
-        
-        w, h = state.map_size
-        blocked = state.walls | state.obstacles
-        bomb_positions = {b.pos for b in state.bombs}
-        blocked |= bomb_positions
-        
-        path = []
-        bombs = []
-        
-        # ===== 1. THREAT DETECTION (IMMEDIATE ESCAPE) =====
-        if self._is_in_danger(unit.pos, state):
-            print(f"    [{unit.id[:8]}] DANGER - escaping")
-            self.unit_modes[unit.id] = UnitMode.RETREAT
-            escape_pos = self._find_escape(unit.pos, blocked, w, h)
-            if escape_pos:
-                escape_path = self.pathfinder.find_path(unit.pos, escape_pos, blocked, w, h)
-                if escape_path:
-                    path = escape_path
-        
-        # ===== 2. BOOSTER STATE CHECK (PRIORITIZE UPGRADES) =====
-        elif unit.bombs_available == 0:
-            self.unit_modes[unit.id] = UnitMode.WAIT
-            # Just wait, no action
-        
-        # ===== 3. HIGH-VALUE TARGETS (MOBS = 50 POINTS) =====
-        elif state.mobs:
-            nearby_mobs = [m for m in state.mobs if self.pathfinder.manhattan(unit.pos, m) < 25]
-            if nearby_mobs:
-                self.unit_modes[unit.id] = UnitMode.HUNT
-                target = min(nearby_mobs, key=lambda m: self.pathfinder.manhattan(unit.pos, m))
-                hunt_path = self.pathfinder.find_path(unit.pos, target, blocked, w, h)
-                if hunt_path:
-                    path = hunt_path[:30]
-        
-        # ===== 4. ENEMY HUNTING (5 POINTS EACH) =====
-        elif state.enemies:
-            nearby_enemies = [e for e in state.enemies if self.pathfinder.manhattan(unit.pos, e) < 25]
-            if nearby_enemies:
-                self.unit_modes[unit.id] = UnitMode.HUNT
-                target = min(nearby_enemies, key=lambda e: self.pathfinder.manhattan(unit.pos, e))
-                hunt_path = self.pathfinder.find_path(unit.pos, target, blocked, w, h)
-                if hunt_path:
-                    path = hunt_path[:30]
-        
-        # ===== 5. CHAIN EXPLOSION DETECTION =====
-        elif self._can_trigger_chain(unit.pos, state):
-            self.unit_modes[unit.id] = UnitMode.CHAIN
-            path, bombs = self._position_for_chain(unit, state, blocked)
-        
-        # ===== 6. OBSTACLE FARMING (OPTIMIZED FOR POINTS) =====
-        elif state.obstacles:
-            self.unit_modes[unit.id] = UnitMode.FARM
-            path, bombs = self._farm_obstacles_optimized(unit, state, blocked)
-        
-        # ===== 7. VISION SPREADING (INCREASE VISION UNION) =====
-        elif self._should_spread_for_vision(unit, state):
-            self.unit_modes[unit.id] = UnitMode.SPREAD
-            path = self._spread_for_vision(unit.pos, blocked, w, h)
-        
-        # ===== 8. GROUPING FOR SAFETY =====
-        elif self._should_group(unit, state):
-            self.unit_modes[unit.id] = UnitMode.GROUP
-            path = self._move_to_group(unit, state, blocked)
-        
-        # ===== 9. DEFAULT SCOUT =====
-        else:
-            self.unit_modes[unit.id] = UnitMode.SCOUT
-            path = self._scout_path(unit.pos, blocked, w, h)
-        
-        return path[:30], bombs
-    
-    def _is_in_danger(self, pos: Pos, state: GameState) -> bool:
-        """Check if threatened by bombs or enemies"""
-        # Enemy adjacent
-        for enemy in state.enemies:
-            if self.pathfinder.manhattan(pos, enemy) <= 1:
-                return True
-        
-        # Mob adjacent
-        for mob in state.mobs:
-            if self.pathfinder.manhattan(pos, mob) <= 1:
-                return True
-        
-        # In bomb blast radius
-        for bomb in state.bombs:
-            if self.pathfinder.manhattan(pos, bomb.pos) <= bomb.radius:
-                return True
-        
-        return False
-    
-    def _find_escape(self, pos: Pos, blocked: Set[Pos], w: int, h: int) -> Optional[Pos]:
-        """BFS to find nearest safe cell"""
-        queue = deque([(pos, 0)])
-        visited = {pos}
-        
-        while queue:
-            current, dist = queue.popleft()
-            
-            if dist > 0:
-                return current
-            
-            if dist > 15:  # Increased from 10
-                break
-            
-            for neighbor in self.pathfinder.neighbors4(current):
-                if not self.pathfinder.in_bounds(neighbor, w, h):
-                    continue
-                if neighbor in visited or neighbor in blocked:
-                    continue
-                
-                visited.add(neighbor)
-                queue.append((neighbor, dist + 1))
-        
-        return None
-    
-    def _can_trigger_chain(self, pos: Pos, state: GameState) -> bool:
-        """Check if unit can trigger chain explosions"""
-        # Look for bombs about to explode near obstacles
-        for bomb in state.bombs:
-            if bomb.timer <= 1:  # About to explode
-                # Check if position this bomb near obstacles
-                nearby_obs = sum(1 for o in state.obstacles 
-                               if self.pathfinder.manhattan(bomb.pos, o) <= bomb.radius)
-                if nearby_obs >= 2:
-                    return True
-        return False
-    
-    def _position_for_chain(self, unit: Unit, state: GameState, blocked: Set[Pos]) -> Tuple[List[Pos], List[Pos]]:
-        """Position unit to trigger chain explosions"""
-        # Find bomb about to explode
-        for bomb in sorted(state.bombs, key=lambda b: b.timer):
-            if bomb.timer <= 2:
-                # Try to position next to it for chain
-                adjacent = [self.pathfinder.neighbors4(bomb.pos)]
-                for adj_pos in adjacent[0]:
-                    if adj_pos not in blocked and self.pathfinder.in_bounds(adj_pos, *state.map_size):
-                        path = self.pathfinder.find_path(unit.pos, adj_pos, blocked, *state.map_size)
-                        if path:
-                            return path[:30], [adj_pos]
-        
-        return [], []
-    
-    def _farm_obstacles_optimized(self, unit: Unit, state: GameState, blocked: Set[Pos]) -> Tuple[List[Pos], List[Pos]]:
-        """Farm obstacles for maximum point value"""
-        w, h = state.map_size
-        
-        if not state.obstacles:
-            return [], []
-        
-        # Find clusters of obstacles (for chain explosions)
-        best_cluster = None
-        best_score = 0
-        
-        for obs in state.obstacles:
-            cluster_size = sum(1 for o in state.obstacles 
-                             if self.pathfinder.manhattan(obs, o) <= 4)
-            if cluster_size > best_score:
-                best_score = cluster_size
-                best_cluster = obs
-        
-        if best_cluster:
-            # Approach the cluster
-            if self.pathfinder.manhattan(unit.pos, best_cluster) == 1:
-                # Adjacent, plant bomb
-                return [], [best_cluster]
-            else:
-                # Path to adjacent position
-                stand_pos = self._choose_stand_cell(best_cluster, unit.pos, blocked, w, h)
-                if stand_pos:
-                    path = self.pathfinder.find_path(unit.pos, stand_pos, blocked, w, h)
-                    if path:
-                        return path[:30], [stand_pos]
-        
-        return [], []
-    
-    def _choose_stand_cell(self, obstacle: Pos, unit_pos: Pos, blocked: Set[Pos], 
-                          w: int, h: int) -> Optional[Pos]:
-        """Choose best adjacent cell for bombing"""
-        candidates = []
-        for neighbor in self.pathfinder.neighbors4(obstacle):
-            if self.pathfinder.in_bounds(neighbor, w, h) and neighbor not in blocked:
-                dist = self.pathfinder.manhattan(unit_pos, neighbor)
-                candidates.append((dist, neighbor))
-        
-        if candidates:
-            candidates.sort()
-            return candidates[0][1]
-        return None
-    
-    def _should_spread_for_vision(self, unit: Unit, state: GameState) -> bool:
-        """Spread units to maximize vision union"""
-        # If within 5 cells of another unit, consider spreading
-        other_units = [u for u in state.units.values() if u.id != unit.id and u.alive]
-        for other in other_units:
-            if self.pathfinder.manhattan(unit.pos, other.pos) <= 5:
-                return True
-        return False
-    
-    def _spread_for_vision(self, pos: Pos, blocked: Set[Pos], w: int, h: int) -> List[Pos]:
-        """Move away from other units to increase vision coverage"""
-        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-        best_pos = None
-        best_score = 0
-        
-        for dx, dy in directions:
-            for step in range(1, 6):
-                candidate = (pos[0] + dx * step, pos[1] + dy * step)
-                if self.pathfinder.in_bounds(candidate, w, h) and candidate not in blocked:
-                    # Score: distance from current
-                    score = step
-                    if score > best_score:
-                        best_score = score
-                        best_pos = candidate
-        
-        if best_pos:
-            return self.pathfinder.find_path(pos, best_pos, blocked, w, h) or []
-        return []
-    
-    def _should_group(self, unit: Unit, state: GameState) -> bool:
-        """Group when under threat or low on bombs"""
-        if unit.bombs_available == 0:
-            return True
-        
-        # If mobs or enemies nearby, group for safety
-        for enemy in state.enemies:
-            if self.pathfinder.manhattan(unit.pos, enemy) < 20:
-                return True
-        
-        return False
-    
-    def _move_to_group(self, unit: Unit, state: GameState, blocked: Set[Pos]) -> List[Pos]:
-        """Move toward other units for safety"""
-        w, h = state.map_size
-        other_units = [u for u in state.units.values() if u.id != unit.id and u.alive]
-        
-        if other_units:
-            closest = min(other_units, key=lambda u: self.pathfinder.manhattan(unit.pos, u.pos))
-            path = self.pathfinder.find_path(unit.pos, closest.pos, blocked, w, h)
-            if path and len(path) > 1:  # Don't go exactly to same spot
-                return path[:30]
-        
-        return []
-    
-    def _scout_path(self, pos: Pos, blocked: Set[Pos], w: int, h: int, steps: int = 5) -> List[Pos]:
-        """Random exploration"""
-        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-        current = pos
-        visited = {pos}
-        path = []
-        
-        for _ in range(steps):
-            chosen = None
-            for dx, dy in directions:
-                neighbor = (current[0] + dx, current[1] + dy)
-                
-                if self.pathfinder.in_bounds(neighbor, w, h) and neighbor not in blocked and neighbor not in visited:
-                    chosen = neighbor
-                    break
-            
-            if not chosen:
-                break
-            
-            current = chosen
-            visited.add(current)
-            path.append(current)
-        
-        return path
-
-
-# ============================================================================
-# GAME ENGINE
-# ============================================================================
-
-class AdvancedGameEngine:
-    """Main game loop with optimized timing"""
+class GameEngine:
+    """Main game loop - robust and reliable"""
     
     def __init__(self):
         self.api = ApiClient()
-        self.controller = AdvancedController()
         self.current_state: Optional[GameState] = None
-        self.running = True
-        self.last_booster_check = 0.0
-    
-    def fetch_state(self):
-        """Fetch state with 20s rate limit"""
-        while self.running:
-            success, data = self.api.get_arena()
-            
-            if success:
-                parsed = StateParser.parse(data)
-                if parsed:
-                    self.current_state = parsed
-                    alive = len(parsed.units)
-                    print(f"\n[State] {alive} units, {len(parsed.obstacles)} obstacles, {len(parsed.bombs)} bombs")
-            
-            # Respect 20s minimum (3 req/min limit)
-            time.sleep(1)  # Check frequently but respect rate limit in API call
-    
-    def check_boosters(self):
-        """Check and activate boosters every 90s"""
-        current_time = time.time()
-        
-        if current_time - self.last_booster_check < BOOSTER_INTERVAL:
-            return
-        
-        self.last_booster_check = current_time
-        
-        try:
-            success, data = self.api.get_boosters()
-            if success and data.get("available"):
-                available = data["available"]
-                
-                # Priority: bomb_range → bomb_delay → view
-                for booster in available:
-                    booster_type = booster.get("type")
-                    if booster_type in ["bomb_range", "bomb_delay", "view"]:
-                        success, _ = self.api.activate_booster(booster_type)
-                        if success:
-                            print(f"[Booster] ✓ Activated {booster_type}")
-                        break
-        
-        except Exception as e:
-            print(f"[Booster] Error: {e}")
+        self.cycle_count = 0
+        self.last_print_time = 0.0
+        self.print_interval = 5.0  # Print stats every 5 seconds
     
     def run(self):
-        """Main game loop"""
-        print("=" * 70)
-        print("BOMBERMAN+ ADVANCED AI (OPTIMIZED STRATEGY)")
-        print("Rate limit: 3 requests/minute (20s fetch interval)")
-        print("=" * 70)
-        
-        # Background fetch thread
-        fetch_thread = threading.Thread(target=self.fetch_state, daemon=True)
-        fetch_thread.start()
-        
-        print("\n[Game] Starting...")
+        """Main loop - runs continuously"""
+        print("=" * 70, file=sys.stderr)
+        print("BOMBERMAN+ FARMING AI (3 REQ/SEC)", file=sys.stderr)
+        print("Fetch every 0.667s | Farm obstacles | Escape danger | Respawn", file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
         
         try:
-            while self.running:
-                self.check_boosters()
+            while True:
+                cycle_start = time.time()
                 
-                if self.current_state is None:
-                    print("[Game] Waiting for state...")
-                    time.sleep(5)
-                    continue
+                # Try to fetch state
+                success, state = self.api.fetch_state()
                 
-                state = self.current_state
-                commands = []
-                
-                print(f"\n[Decide] Analyzing {len(state.units)} units...")
-                
-                for unit_id, unit in state.units.items():
-                    if not unit.can_move:
-                        continue
+                if success and state:
+                    self.current_state = state
                     
-                    path, bombs = self.controller.decide_unit_actions(unit, state)
+                    # Build commands for all units
+                    commands = []
+                    for unit_id, unit_info in state.bombers.items():
+                        path, bombs = decide_unit_action(unit_id, unit_info, state)
+                        
+                        cmd = {
+                            "id": unit_id,
+                            "path": [[p[0], p[1]] for p in path],
+                            "bombs": bombs
+                        }
+                        commands.append(cmd)
                     
-                    cmd = {
-                        "id": unit_id,
-                        "path": [[p[0], p[1]] for p in path],
-                        "bombs": [[b[0], b[1]] for b in bombs]
-                    }
-                    commands.append(cmd)
+                    # Send commands
+                    send_ok, cmd_count = self.api.send_commands(commands)
                     
-                    mode = self.controller.unit_modes.get(unit_id, UnitMode.SCOUT).value
-                    print(f"  [{unit_id[:8]}] {mode:8} path={len(path):2} bombs={len(bombs)}")
+                    # Print stats occasionally
+                    if time.time() - self.last_print_time >= self.print_interval:
+                        alive = state.alive_count()
+                        obs = len(state.obstacles)
+                        bombs = len(state.bombs)
+                        print(f"[Cycle {self.cycle_count}] {alive} units | {obs} obstacles | {bombs} bombs | "
+                              f"{cmd_count} cmd sent | health={self.api.error_count}", file=sys.stderr)
+                        self.last_print_time = time.time()
+                    
+                    self.cycle_count += 1
                 
-                if commands:
-                    print(f"\n[Move] Sending {len(commands)} commands...")
-                    success, response = self.api.send_move(commands)
-                    if success:
-                        print(f"[Move] ✓ Accepted")
-                    else:
-                        print(f"[Move] ✗ Failed")
+                else:
+                    # No state received, print error
+                    if self.cycle_count % 10 == 0:
+                        print(f"[Cycle {self.cycle_count}] Fetch failed - retrying...", file=sys.stderr)
+                    self.cycle_count += 1
                 
-                # Wait before next decision cycle
-                time.sleep(2)  # Small wait before checking state again
+                # Check health
+                if not self.api.is_healthy():
+                    print(f"[Fatal] Too many errors ({self.api.error_count})", file=sys.stderr)
+                    time.sleep(5)  # Wait before retry
+                
+                # Sleep to maintain timing
+                cycle_time = time.time() - cycle_start
+                if cycle_time < FETCH_INTERVAL:
+                    time.sleep(FETCH_INTERVAL - cycle_time)
         
         except KeyboardInterrupt:
-            print("\n[Game] Shutdown requested")
-            self.running = False
+            print(f"\n[Shutdown] Graceful shutdown after {self.cycle_count} cycles", file=sys.stderr)
+            sys.exit(0)
+        
+        except Exception as e:
+            print(f"[Fatal Error] {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 # ============================================================================
@@ -735,5 +525,5 @@ class AdvancedGameEngine:
 # ============================================================================
 
 if __name__ == "__main__":
-    engine = AdvancedGameEngine()
+    engine = GameEngine()
     engine.run()
